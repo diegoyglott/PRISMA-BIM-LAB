@@ -1,5 +1,5 @@
 """
-PRISMA SpA Constructora — Plataforma PMO de Control de Costos, Recursos y Curva S.
+PRISMA SpA Constructora — Plataforma PMO de Control de Presupuesto y APU.
 
 Características principales:
 - Lectura en una sola pasada con openpyxl (data_only=True, read_only=True) y @st.cache_data
@@ -8,7 +8,7 @@ Características principales:
   Arquímedes, MS Project, Primavera P6 o plantillas propias.
 - Generador realista de datos de ejemplo (Modo Demo) con PV y EV.
 - Dashboard ejecutivo en Streamlit con identidad visual PRISMA SpA Constructora,
-  gráficos interactivos Plotly (Dona, Top 15, Pareto 80/20, Treemap, Curva S) y
+  gráficos interactivos Plotly (Dona, Top 15, Pareto 80/20 y Treemap) y
   exportación limpia a Excel (.xlsx).
 """
 
@@ -35,7 +35,7 @@ import streamlit as st
 # Identidad visual PRISMA SpA Constructora y configuración de página
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="PRISMA SpA | Control PMO & Presupuestos",
+    page_title="PRISMA SpA | Control de Presupuesto y APU",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -135,25 +135,40 @@ SUBTOTAL_PREFIXES = (
 # Inyección de estilos CSS corporativos (PRISMA SpA Constructora)
 # ---------------------------------------------------------------------------
 def aplicar_estilos_prisma() -> None:
-    """Aplica estilos corporativos consistentes tanto en entorno local como en Streamlit Cloud."""
+    """Aplica estilos corporativos consistentes y elimina espacio superior sobrante."""
     st.markdown(
         f"""
 <style>
 :root {{
     color-scheme: light;
+    --primary-color: {PRISMA_GOLD};
+    --background-color: {PRISMA_BG};
+    --secondary-background-color: #FFFFFF;
+    --text-color: #152536;
 }}
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {{
+.stApp, [data-testid="stAppViewContainer"] {{
     background-color: {PRISMA_BG} !important;
     color: #152536 !important;
+}}
+[data-testid="stHeader"] {{
+    background: transparent !important;
+    height: 2.25rem !important;
+}}
+.main .block-container, [data-testid="stMainBlockContainer"] {{
+    padding-top: 1.15rem !important;
+    padding-bottom: 1.5rem !important;
 }}
 section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {{
     background-color: #FFFFFF !important;
     color: #152536 !important;
     border-right: 1px solid #CBD5E1;
 }}
-/* Forzar contraste legible en textos, etiquetas y controles incluso si el host usa tema oscuro */
-.stApp h1, .stApp h2, .stApp h3, .stApp h4,
-.stApp p, .stApp label, .stApp span,
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
+    padding-top: 0.75rem !important;
+}}
+/* Tipografía general en zona clara (sin pisar textos blancos del banner ni tags) */
+.stApp h2, .stApp h3, .stApp h4,
+.stApp p, .stApp label,
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3,
@@ -161,109 +176,148 @@ section[data-testid="stSidebar"] p,
 section[data-testid="stSidebar"] label {{
     color: #152536;
 }}
-.stApp [data-baseweb="input"] input,
-.stApp [data-baseweb="select"] > div,
-section[data-testid="stSidebar"] [data-baseweb="input"] input,
-section[data-testid="stSidebar"] [data-baseweb="select"] > div {{
+/* Inputs, selects y file uploader siempre claros y legibles */
+[data-baseweb="input"], [data-baseweb="base-input"],
+[data-baseweb="input"] input,
+[data-baseweb="select"] > div {{
     background-color: #FFFFFF !important;
     color: #152536 !important;
     border-color: #CBD5E1 !important;
+}}
+[data-baseweb="select"] span, [data-baseweb="select"] svg {{
+    color: #152536 !important;
+}}
+[data-testid="stFileUploaderDropzone"] {{
+    background-color: #F8FAFC !important;
+    color: #152536 !important;
+    border: 1px dashed #94A3B8 !important;
+}}
+[data-testid="stFileUploaderDropzone"] * {{
+    color: #152536 !important;
+}}
+[data-testid="stFileUploaderDropzone"] button {{
+    background-color: #FFFFFF !important;
+    color: {PRISMA_NAVY} !important;
+    border: 1px solid #CBD5E1 !important;
+}}
+[data-testid="stExpander"] {{
+    background-color: #FFFFFF !important;
+    border: 1px solid #DCE3EC !important;
+    border-radius: 10px !important;
 }}
 /* Tags de multiselect con identidad PRISMA */
 span[data-baseweb="tag"] {{
     background-color: {PRISMA_NAVY} !important;
     color: #FFFFFF !important;
 }}
-span[data-baseweb="tag"] span {{
+span[data-baseweb="tag"] span, span[data-baseweb="tag"] svg {{
     color: #FFFFFF !important;
 }}
+/* Banner corporativo PRISMA */
 .prisma-header {{
     background: linear-gradient(135deg, {PRISMA_NAVY_DARK} 0%, {PRISMA_NAVY} 68%, #204A73 100%);
     border-bottom: 4px solid {PRISMA_GOLD};
     border-radius: 12px;
-    padding: 1.15rem 1.5rem;
-    margin-bottom: 1.15rem;
+    padding: 0.95rem 1.35rem;
+    margin-top: 0 !important;
+    margin-bottom: 0.95rem;
     color: #FFFFFF !important;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1.25rem;
+    gap: 1.15rem;
     box-shadow: 0 4px 16px rgba(21, 51, 82, 0.14);
-}}
-.prisma-header * {{
-    color: #FFFFFF;
 }}
 .prisma-header-left {{
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.95rem;
 }}
 .prisma-emblem {{
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(200, 146, 54, 0.55);
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(200, 146, 54, 0.6);
     border-radius: 10px;
-    padding: 0.55rem 0.7rem;
+    padding: 0.5rem 0.65rem;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
 }}
-.prisma-eyebrow {{
-    font-size: 0.75rem;
-    font-weight: 700;
+.stApp .prisma-header .prisma-eyebrow {{
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
     letter-spacing: 1.2px;
     text-transform: uppercase;
     color: #F6D89C !important;
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.1rem;
 }}
-.prisma-title {{
+.stApp .prisma-header h1.prisma-title {{
     margin: 0 !important;
-    font-size: 1.45rem !important;
+    padding: 0 !important;
+    font-size: 1.38rem !important;
     font-weight: 700 !important;
     line-height: 1.2 !important;
     color: #FFFFFF !important;
 }}
-.prisma-subtitle {{
-    margin: 0.3rem 0 0 0 !important;
-    font-size: 0.88rem !important;
-    color: #D7E2EE !important;
+.stApp .prisma-header p.prisma-subtitle,
+.stApp .prisma-header p.prisma-subtitle b {{
+    margin: 0.25rem 0 0 0 !important;
+    font-size: 0.84rem !important;
+    color: #E2E8F0 !important;
 }}
-.prisma-badge {{
+.stApp .prisma-header .prisma-badge {{
     background: rgba(200, 146, 54, 0.22);
     border: 1px solid {PRISMA_GOLD};
     color: #F6D89C !important;
-    padding: 0.4rem 0.85rem;
+    padding: 0.35rem 0.8rem;
     border-radius: 999px;
-    font-size: 0.78rem;
+    font-size: 0.76rem;
     font-weight: 700;
     white-space: nowrap;
 }}
-/* Tarjetas KPI sin truncamiento */
+/* Tarjetas KPI sin truncamiento y delta legible */
 div[data-testid="stMetric"] {{
     background-color: {PRISMA_CARD} !important;
     border: 1px solid #DCE3EC;
     border-top: 3px solid {PRISMA_NAVY};
     border-radius: 10px;
-    padding: 0.85rem 0.9rem;
+    padding: 0.75rem 0.9rem;
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
 }}
 div[data-testid="stMetricLabel"] p {{
     font-weight: 600 !important;
     color: {PRISMA_SLATE} !important;
-    font-size: 0.8rem !important;
+    font-size: 0.72rem !important;
+    line-height: 1.12 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    min-height: 2.2em;
 }}
 div[data-testid="stMetricValue"] > div {{
     color: {PRISMA_NAVY} !important;
     font-weight: 700 !important;
-    font-size: clamp(1.1rem, 1.45vw, 1.48rem) !important;
+    font-size: clamp(1.1rem, 1.45vw, 1.46rem) !important;
     line-height: 1.25 !important;
     overflow: visible !important;
     text-overflow: unset !important;
     white-space: nowrap !important;
 }}
+div[data-testid="stMetricDelta"] {{
+    background-color: #EEF2F6 !important;
+    color: {PRISMA_NAVY} !important;
+    padding: 0.15rem 0.5rem !important;
+    border-radius: 999px !important;
+}}
+div[data-testid="stMetricDelta"] > div,
+div[data-testid="stMetricDelta"] svg {{
+    color: {PRISMA_NAVY} !important;
+}}
 button[data-baseweb="tab"] {{
     font-weight: 600 !important;
     color: {PRISMA_SLATE} !important;
+    white-space: normal !important;
+    text-align: center !important;
 }}
 button[data-baseweb="tab"][aria-selected="true"] {{
     color: {PRISMA_NAVY} !important;
@@ -292,7 +346,7 @@ def render_banner_corporativo(meta_texto: str, modo_badge: str) -> None:
         f'{svg_emblema}'
         f'<div>'
         f'<div class="prisma-eyebrow">PRISMA SpA Constructora · Plataforma PMO</div>'
-        f'<h1 class="prisma-title">Control Ejecutivo de Presupuestos, Recursos y Curva S</h1>'
+        f'<h1 class="prisma-title">Control Ejecutivo · Presupuesto y Análisis de APU</h1>'
         f'<p class="prisma-subtitle">{meta_texto}</p>'
         f'</div>'
         f'</div>'
@@ -1470,7 +1524,7 @@ def grafico_curva_s(df_curva: pd.DataFrame, vista_porcentual: bool, tiene_real: 
 
     fig.update_layout(
         title=dict(
-            text="Curva S de Control Físico / Financiero (Parcial vs. Acumulado)",
+            text="Curva S · Avance Físico y Financiero",
             font=dict(color=PRISMA_NAVY, size=15),
         ),
         barmode="group",
@@ -1538,7 +1592,7 @@ def main() -> None:
     aplicar_estilos_prisma()
 
     # -----------------------------------------------------------------------
-    # Barra Lateral: Fuente de datos, mapeo dinámico, filtros y Curva S
+    # Barra lateral: fuente de datos, mapeo dinámico y filtros
     # -----------------------------------------------------------------------
     with st.sidebar:
         if LOGO_PRISMA_PATH.exists():
@@ -1550,7 +1604,7 @@ def main() -> None:
         modo_demo = st.checkbox(
             "Cargar datos de ejemplo de construcción",
             value=False,
-            help="Genera un proyecto realista de edificación en memoria con fechas, PV y EV.",
+            help="Genera un presupuesto de edificación de ejemplo en memoria.",
         )
 
         archivo_subido = None
@@ -1635,7 +1689,7 @@ def main() -> None:
             st.stop()
 
         with st.sidebar:
-            st.header("2. Mapeo Inteligente")
+            st.header("2. Asignación de Columnas")
             fila_auto = detectar_fila_encabezado(filas_crudas)
             auto_hdr = st.checkbox("Detectar fila de encabezados automáticamente", value=True)
             fila_hdr = (
@@ -1685,8 +1739,8 @@ def main() -> None:
                     "cantidad": mapear_campo("Cantidad / Metrado", "cantidad"),
                     "precio_unitario": mapear_campo("Precio Unitario (PU)", "precio_unitario"),
                     "total": mapear_campo("Costo Total / Parcial", "total"),
-                    "fecha": mapear_campo("Fecha / Periodo (Opcional)", "fecha"),
-                    "costo_real": mapear_campo("Costo Real / EV (Opcional)", "costo_real"),
+                    "fecha": None,
+                    "costo_real": None,
                 }
 
         usadas_set = {v for v in sugerencias.values() if v is not None}
@@ -1723,10 +1777,10 @@ def main() -> None:
         st.stop()
 
     # -----------------------------------------------------------------------
-    # Filtros globales y parámetros temporales en sidebar
+    # Filtros globales en sidebar
     # -----------------------------------------------------------------------
     with st.sidebar:
-        st.header("3. Filtros Globales")
+        st.header("3. Filtros")
         caps_disp = list(dict.fromkeys(df_datos["Capítulo"].tolist()))
         caps_sel = st.multiselect("Capítulo / Especialidad", options=caps_disp, default=caps_disp)
 
@@ -1737,28 +1791,6 @@ def main() -> None:
         unidades_sel = st.multiselect("Unidad de Medida", options=unidades_disp, default=unidades_disp)
 
         buscador = st.text_input("Buscar partida o recurso", placeholder="Ej. Hormigón, Carpintero, M2…").strip()
-
-        st.header("4. Parámetros Curva S")
-        tiene_fechas_reales = df_datos["Fecha"].notna().any()
-        if not tiene_fechas_reales:
-            st.caption("El Excel no incluye fechas. Define el horizonte del proyecto para proyectar la Curva S:")
-            c_f1, c_f2 = st.columns(2)
-            with c_f1:
-                fecha_ini_sim = st.date_input("Inicio", value=dt.date(2026, 3, 1))
-            with c_f2:
-                fecha_fin_sim = st.date_input("Término", value=dt.date(2026, 10, 31))
-            modelo_sim = st.selectbox(
-                "Distribución temporal",
-                options=[
-                    "Secuencial por Capítulos (WBS)",
-                    "Curva S Logística (PMO típica)",
-                    "Uniforme / Lineal",
-                ],
-            )
-        else:
-            fecha_ini_sim = dt.date(2026, 1, 1)
-            fecha_fin_sim = dt.date(2026, 12, 31)
-            modelo_sim = "Secuencial por Capítulos (WBS)"
 
     # Aplicar filtros globales
     mask = (
@@ -1813,28 +1845,28 @@ def main() -> None:
 
     k1, k2, k3, k4, k5 = st.columns([1.45, 0.82, 0.82, 1.0, 1.1])
     with k1:
-        st.metric("Presupuesto Total (Directo)", formato_moneda(total_presupuesto, 0))
+        st.metric("Presupuesto", formato_moneda(total_presupuesto, 0))
     with k2:
-        st.metric("Partidas Activas", f"{partidas_activas:,}".replace(",", "."))
+        st.metric("Partidas", f"{partidas_activas:,}".replace(",", "."))
     with k3:
-        st.metric("Recursos Únicos", f"{recursos_unicos:,}".replace(",", "."))
+        st.metric("Recursos", f"{recursos_unicos:,}".replace(",", "."))
     with k4:
         st.metric(
-            "Recurso Mayor Incidencia",
+            "Recurso Líder",
             f"{top_rec_pct:.1f}%",
             delta=acortar_etiqueta(top_rec_nombre, 26),
             delta_color="off",
         )
     with k5:
         st.metric(
-            "Mat. vs Mano de Obra",
+            "Mats. / Mano de Obra",
             f"{pct_mat:.0f}% / {pct_mo:.0f}%",
             delta="Materiales / MO",
             delta_color="off",
         )
 
     if not df_pie.empty:
-        with st.expander("💼 Pie Oficial del Presupuesto (Directo, GG, Utilidad, Neto, IVA, Total)", expanded=False):
+        with st.expander("💼 Resumen Económico del Presupuesto", expanded=False):
             cols_pie = st.columns(min(len(df_pie), 6))
             for i, (_, r_pie) in enumerate(df_pie.iterrows()):
                 cols_pie[i % len(cols_pie)].metric(
@@ -1846,57 +1878,42 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Pestañas Principales del Dashboard
     # -----------------------------------------------------------------------
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
-            "📋 Estructuración de Partidas y Recursos",
-            "📊 Análisis Gráfico (Pareto & Distribución)",
-            "📈 Curva S (Control Físico / Financiero)",
+            "📋 Presupuesto y trazabilidad",
+            "🧱 Analizador de APU",
+            "📦 Recursos y abastecimiento",
+            "📊 Críticos y Pareto",
+            "💱 Escenarios de precios",
+            "🛡️ Calidad del presupuesto",
         ]
     )
 
-    # =======================================================================
-    # B. PESTAÑA 1: Estructuración de Partidas y Recursos
-    # =======================================================================
+    # 1. Presupuesto y trazabilidad
     with tab1:
-        c_busq1, c_busq2 = st.columns([2, 3])
-        with c_busq1:
-            insumo_rastrear = st.text_input(
-                "🔎 Rastreador de Insumo específico (ej. 'Hormigón', 'Carpintero', 'OSB'):",
-                value="",
-                key="rastreador_insumo",
-            ).strip()
+        insumo_rastrear = st.text_input(
+            "Rastreador de partida o recurso",
+            value="",
+            key="rastreador_insumo",
+            placeholder="Ej. Hormigón, Carpintero, OSB",
+        ).strip()
 
         df_tab1 = df_filt.copy()
         if insumo_rastrear:
             pat_ins = re.escape(normalizar_texto(insumo_rastrear))
-            df_tab1 = df_tab1[df_tab1["Recurso"].map(normalizar_texto).str.contains(pat_ins, regex=True)]
+            df_tab1 = df_tab1[
+                df_tab1["Recurso"].map(normalizar_texto).str.contains(pat_ins, regex=True)
+                | df_tab1["Partida"].map(normalizar_texto).str.contains(pat_ins, regex=True)
+            ]
             if df_tab1.empty:
-                st.warning(f"No se encontraron partidas que utilicen '{insumo_rastrear}'.")
-            else:
-                impacto_ins = df_tab1["Total"].sum()
-                pct_ins = (impacto_ins / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
-                with c_busq2:
-                    st.success(
-                        f"**Impacto acumulado de '{insumo_rastrear}':** {formato_moneda(impacto_ins, 0)} "
-                        f"({pct_ins:.2f}% del total filtrado) en **{df_tab1[['Código', 'Partida']].drop_duplicates().shape[0]} partidas**."
-                    )
+                st.warning(f"No se encontraron partidas o recursos relacionados con '{insumo_rastrear}'.")
 
         if not df_tab1.empty:
             total_t1 = df_tab1["Total"].sum()
             df_vista = df_tab1[
-                [
-                    "Capítulo",
-                    "Código",
-                    "Partida",
-                    "Tipo_Recurso",
-                    "Recurso",
-                    "Unidad",
-                    "Cantidad",
-                    "Precio_Unitario",
-                    "Total",
-                ]
+                ["Capítulo", "Código", "Partida", "Tipo_Recurso", "Recurso", "Unidad", "Cantidad", "Precio_Unitario", "Total"]
             ].copy()
-            df_vista["Incidencia (%)"] = (df_vista["Total"] / total_t1 * 100.0) if total_t1 > 0 else 0.0
+            df_vista["Incidencia (%)"] = df_vista["Total"] / total_t1 * 100.0 if total_t1 > 0 else 0.0
 
             st.dataframe(
                 df_vista,
@@ -1906,135 +1923,170 @@ def main() -> None:
                     "Capítulo": st.column_config.TextColumn("Capítulo / WBS", width="medium"),
                     "Código": st.column_config.TextColumn("Código", width="small"),
                     "Partida": st.column_config.TextColumn("Partida / Actividad", width="large"),
-                    "Tipo_Recurso": st.column_config.TextColumn("Tipo de Recurso", width="small"),
+                    "Tipo_Recurso": st.column_config.TextColumn("Tipo", width="small"),
                     "Recurso": st.column_config.TextColumn("Recurso / Insumo", width="large"),
-                    "Unidad": st.column_config.TextColumn("Und.", width="small"),
+                    "Unidad": st.column_config.TextColumn("Unidad", width="small"),
                     "Cantidad": st.column_config.NumberColumn("Cantidad", format="%.2f"),
                     "Precio_Unitario": st.column_config.NumberColumn("Precio Unitario", format="$ %.0f"),
                     "Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
-                    "Incidencia (%)": st.column_config.ProgressColumn(
-                        "Incidencia",
-                        format="%.2f%%",
-                        min_value=0.0,
-                        max_value=max(float(df_vista["Incidencia (%)"].max()), 1.0),
-                    ),
+                    "Incidencia (%)": st.column_config.ProgressColumn("Incidencia", format="%.2f%%", min_value=0.0, max_value=max(float(df_vista["Incidencia (%)"].max()), 1.0)),
                 },
             )
 
-            # Vista jerárquica resumida Capítulo -> Partida
-            with st.expander("🗂️ Resumen Jerárquico Agrupado (Capítulo → Partida)", expanded=False):
+            with st.expander("Resumen por capítulo y partida", expanded=False):
                 res_jer = (
                     df_tab1.groupby(["Capítulo", "Código", "Partida"], as_index=False)
                     .agg(Recursos=("Recurso", "nunique"), Costo_Total=("Total", "sum"))
                     .sort_values(["Capítulo", "Código"])
                 )
-                res_jer["% Incidencia"] = (res_jer["Costo_Total"] / total_t1 * 100.0) if total_t1 > 0 else 0.0
-                st.dataframe(
-                    res_jer,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Costo_Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
-                        "% Incidencia": st.column_config.ProgressColumn(
-                            "% Incidencia",
-                            format="%.2f%%",
-                            min_value=0.0,
-                            max_value=max(float(res_jer["% Incidencia"].max()), 1.0),
-                        ),
-                    },
-                )
+                res_jer["% Incidencia"] = res_jer["Costo_Total"] / total_t1 * 100.0 if total_t1 > 0 else 0.0
+                st.dataframe(res_jer, use_container_width=True, hide_index=True)
 
-            # Exportación limpia a Excel
-            col_exp1, _ = st.columns([1.4, 3.6])
-            with col_exp1:
-                excel_bytes = exportar_excel_estructurado(df_vista)
-                st.download_button(
-                    label="⬇️ Exportar Estructuración a Excel (.xlsx)",
-                    data=excel_bytes,
-                    file_name=f"{Path(nombre_fuente).stem}_PRISMA_PMO.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-    # =======================================================================
-    # C. PESTAÑA 2: Análisis Gráfico de Recursos (Pareto y Distribución)
-    # =======================================================================
-    with tab2:
-        col_g1, col_g2 = st.columns([1, 1.35])
-        with col_g1:
-            st.plotly_chart(grafico_dona_tipo_recurso(df_filt), use_container_width=True)
-        with col_g2:
-            st.plotly_chart(grafico_top15_recursos(df_filt), use_container_width=True)
-
-        st.divider()
-        st.plotly_chart(grafico_pareto_recursos(df_filt, max_items=20), use_container_width=True)
-
-        st.divider()
-        st.plotly_chart(grafico_treemap_jerarquico(df_filt), use_container_width=True)
-
-    # =======================================================================
-    # D. PESTAÑA 3: Curva S de Construcción (Control Físico / Financiero)
-    # =======================================================================
-    with tab3:
-        c_s1, c_s2, c_s3 = st.columns([1.2, 1.2, 1.6])
-        with c_s1:
-            periodicidad = st.radio("Periodicidad:", options=["Mensual", "Semanal"], horizontal=True)
-        with c_s2:
-            vista_curva = st.radio("Vista de Curva S:", options=["Monetaria ($)", "Porcentual (%)"], horizontal=True)
-        with c_s3:
-            tipos_curva_opts = ["Todos los Recursos"] + sorted(df_filt["Tipo_Recurso"].unique().tolist())
-            tipo_curva_sel = st.selectbox("Filtrar Curva S por Tipo de Recurso:", options=tipos_curva_opts)
-
-        df_curva_in = (
-            df_filt if tipo_curva_sel == "Todos los Recursos" else df_filt[df_filt["Tipo_Recurso"] == tipo_curva_sel]
-        )
-
-        if df_curva_in.empty:
-            st.info("No hay datos para el tipo de recurso seleccionado.")
-        else:
-            df_curva, es_simulada, tiene_real = construir_serie_curva_s(
-                df=df_curva_in,
-                periodicidad=periodicidad,
-                fecha_inicio_sim=fecha_ini_sim,
-                fecha_fin_sim=fecha_fin_sim,
-                modelo_sim=modelo_sim,
+            excel_bytes = exportar_excel_estructurado(df_vista)
+            st.download_button(
+                "Exportar detalle a Excel",
+                data=excel_bytes,
+                file_name=f"{Path(nombre_fuente).stem}_PRISMA_APU.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            if es_simulada:
-                st.info(
-                    f"ℹ️ Proyección temporal generada con modelo **{modelo_sim}** entre **{fecha_ini_sim}** y **{fecha_fin_sim}** "
-                    "(el archivo no contenía columnas de fecha)."
-                )
+    # 2. Analizador de APU
+    with tab2:
+        partidas_disp = (
+            df_filt[["Código", "Partida"]]
+            .drop_duplicates()
+            .sort_values(["Código", "Partida"])
+        )
+        partidas_disp["_Etiqueta"] = partidas_disp["Código"].astype(str) + " — " + partidas_disp["Partida"].astype(str)
+        partida_sel = st.selectbox("Seleccione una partida", options=partidas_disp["_Etiqueta"].tolist())
+        codigo_sel = partida_sel.split(" — ", 1)[0]
+        df_apu = df_filt[df_filt["Código"].astype(str) == codigo_sel].copy()
 
-            if df_curva.empty:
-                st.warning("No fue posible generar periodos válidos para la Curva S.")
-            else:
-                st.plotly_chart(
-                    grafico_curva_s(
-                        df_curva=df_curva,
-                        vista_porcentual=(vista_curva == "Porcentual (%)"),
-                        tiene_real=tiene_real,
-                    ),
-                    use_container_width=True,
-                )
+        costo_apu = df_apu["Total"].sum()
+        recursos_apu = df_apu["Recurso"].nunique()
+        por_tipo_apu = df_apu.groupby("Tipo_Recurso", as_index=False)["Total"].sum().sort_values("Total", ascending=False)
+        por_tipo_apu["Incidencia"] = por_tipo_apu["Total"] / costo_apu * 100.0 if costo_apu > 0 else 0.0
 
-                # Resumen ejecutivo de desviación o pico
-                idx_pico = df_curva["PV_Parcial"].idxmax()
-                periodo_pico = df_curva.loc[idx_pico, "Periodo"]
-                monto_pico = df_curva.loc[idx_pico, "PV_Parcial"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Costo directo del APU", formato_moneda(costo_apu, 0))
+        c2.metric("Recursos incluidos", f"{recursos_apu:,}".replace(",", "."))
+        c3.metric("Tipos de recurso", str(df_apu["Tipo_Recurso"].nunique()))
 
-                cs_m1, cs_m2, cs_m3 = st.columns(3)
-                cs_m1.metric("Inversión Total Curva S (PV)", formato_moneda(df_curva["PV_Parcial"].sum(), 0))
-                cs_m2.metric(f"Periodo Pico ({periodicidad})", str(periodo_pico), delta=formato_moneda(monto_pico, 0))
-                if tiene_real and "EV_Acum" in df_curva.columns:
-                    ev_tot = df_curva["EV_Parcial"].sum()
-                    pct_ev = (ev_tot / df_curva["PV_Parcial"].sum() * 100.0) if df_curva["PV_Parcial"].sum() > 0 else 0.0
-                    cs_m3.metric("Avance Real Acumulado (EV)", formato_moneda(ev_tot, 0), delta=f"{pct_ev:.1f}% del PV")
-                else:
-                    cs_m3.metric("Periodos Proyectados", f"{len(df_curva)}", delta="Sin columna Costo Real (EV)")
+        cc1, cc2 = st.columns([1.35, 1])
+        with cc1:
+            st.dataframe(
+                df_apu[
+                    ["Tipo_Recurso", "Recurso", "Unidad", "Cantidad", "Precio_Unitario", "Total"]
+                ].sort_values("Total", ascending=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Precio_Unitario": st.column_config.NumberColumn("Precio Unitario", format="$ %.0f"),
+                    "Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
+                },
+            )
+        with cc2:
+            fig_apu = px.pie(por_tipo_apu, names="Tipo_Recurso", values="Total", hole=0.55, color_discrete_sequence=PRISMA_PALETTE)
+            fig_apu.update_layout(title="Composición del APU", height=400, margin=dict(t=50, b=20))
+            st.plotly_chart(fig_apu, use_container_width=True)
 
-                with st.expander("📅 Tabla de Flujo por Periodo (PV / EV)", expanded=False):
-                    st.dataframe(df_curva, use_container_width=True, hide_index=True)
+    # 3. Recursos y abastecimiento
+    with tab3:
+        res_abast = (
+            df_filt.groupby(["Recurso", "Tipo_Recurso", "Unidad"], as_index=False)
+            .agg(Cantidad_Total=("Cantidad", "sum"), Costo_Total=("Total", "sum"), Partidas=("Código", "nunique"))
+            .sort_values("Costo_Total", ascending=False)
+        )
+        res_abast["Precio_Ponderado"] = res_abast["Costo_Total"] / res_abast["Cantidad_Total"].where(res_abast["Cantidad_Total"] != 0)
+        res_abast["Incidencia"] = res_abast["Costo_Total"] / total_presupuesto * 100.0 if total_presupuesto > 0 else 0.0
+        st.dataframe(
+            res_abast,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Cantidad_Total": st.column_config.NumberColumn("Cantidad Total", format="%.2f"),
+                "Costo_Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
+                "Precio_Ponderado": st.column_config.NumberColumn("Costo / Unidad", format="$ %.2f"),
+                "Incidencia": st.column_config.ProgressColumn("Incidencia", format="%.2f%%", min_value=0.0, max_value=max(float(res_abast["Incidencia"].max()), 1.0)),
+            },
+        )
+        st.download_button(
+            "Exportar listado de abastecimiento",
+            data=res_abast.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"{Path(nombre_fuente).stem}_abastecimiento.csv",
+            mime="text/csv",
+        )
+
+    # 4. Críticos y Pareto
+    with tab4:
+        c1, c2 = st.columns([1, 1.35])
+        with c1:
+            st.plotly_chart(grafico_dona_tipo_recurso(df_filt), use_container_width=True)
+        with c2:
+            st.plotly_chart(grafico_top15_recursos(df_filt), use_container_width=True)
+        st.plotly_chart(grafico_pareto_recursos(df_filt, max_items=20), use_container_width=True)
+        st.plotly_chart(grafico_treemap_jerarquico(df_filt), use_container_width=True)
+
+    # 5. Escenarios económicos
+    with tab5:
+        st.caption("Calcule el impacto de variaciones de mercado sobre el presupuesto filtrado.")
+        tipos_escenario = [
+            "Materiales",
+            "Mano de Obra",
+            "Maquinaria / Equipos",
+            "Subcontratos",
+            "Otros / Partida Directa",
+        ]
+        variaciones: dict[str, float] = {}
+        cols_esc = st.columns(len(tipos_escenario))
+        for i, tipo in enumerate(tipos_escenario):
+            if tipo in df_filt["Tipo_Recurso"].unique():
+                variaciones[tipo] = cols_esc[i].slider(f"{tipo}", -30, 50, 0, 1, format="%d%%")
+
+        df_esc = df_filt.copy()
+        df_esc["Variación"] = df_esc["Tipo_Recurso"].map(lambda x: variaciones.get(str(x), 0.0) / 100.0)
+        df_esc["Costo_Escenario"] = df_esc["Total"] * (1.0 + df_esc["Variación"])
+        costo_escenario = df_esc["Costo_Escenario"].sum()
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Presupuesto base", formato_moneda(total_presupuesto, 0))
+        m2.metric("Presupuesto escenario", formato_moneda(costo_escenario, 0))
+        m3.metric("Variación", f"{((costo_escenario / total_presupuesto - 1) * 100 if total_presupuesto else 0):.2f}%")
+
+        resumen_esc = df_esc.groupby("Tipo_Recurso", as_index=False).agg(Base=("Total", "sum"), Escenario=("Costo_Escenario", "sum"))
+        resumen_esc["Variación $"] = resumen_esc["Escenario"] - resumen_esc["Base"]
+        fig_esc = px.bar(resumen_esc, x="Tipo_Recurso", y=["Base", "Escenario"], barmode="group", labels={"value": "Costo", "Tipo_Recurso": "Tipo de recurso"}, color_discrete_sequence=[PRISMA_NAVY, PRISMA_GOLD])
+        fig_esc.update_layout(title="Comparación por tipo de recurso", margin=dict(t=50, b=50))
+        st.plotly_chart(fig_esc, use_container_width=True)
+        st.dataframe(resumen_esc, use_container_width=True, hide_index=True)
+
+    # 6. Diagnóstico de calidad
+    with tab6:
+        sin_codigo = df_filt[df_filt["Código"].isna() | df_filt["Código"].astype(str).str.strip().isin(["", "None"])]
+        sin_recurso = df_filt[df_filt["Recurso"].isna() | df_filt["Recurso"].astype(str).str.strip().isin(["", "None"])]
+        costos_invalidos = df_filt[(df_filt["Total"].isna()) | (df_filt["Total"] <= 0)]
+        cantidades_invalidas = df_filt[(df_filt["Cantidad"].isna()) | (df_filt["Cantidad"] <= 0)]
+        duplicados = df_filt.duplicated(subset=["Código", "Partida", "Recurso", "Unidad", "Cantidad", "Precio_Unitario"], keep=False)
+
+        resumen_diag = [
+            ("Filas sin código", len(sin_codigo)),
+            ("Filas sin recurso", len(sin_recurso)),
+            ("Costos cero o negativos", len(costos_invalidos)),
+            ("Cantidades cero o negativas", len(cantidades_invalidas)),
+            ("Filas duplicadas", int(duplicados.sum())),
+        ]
+        diag_df = pd.DataFrame(resumen_diag, columns=["Control", "Cantidad"])
+        st.dataframe(diag_df, use_container_width=True, hide_index=True)
+
+        if sin_recurso.empty and costos_invalidos.empty and cantidades_invalidas.empty and not duplicados.any():
+            st.success("No se detectaron inconsistencias básicas en los registros filtrados.")
+
+        with st.expander("Partidas sin recursos detectables", expanded=False):
+            agrupadas = df_filt.groupby(["Código", "Partida"], as_index=False)["Recurso"].nunique()
+            st.dataframe(agrupadas[agrupadas["Recurso"] == 0], use_container_width=True, hide_index=True)
+
+        with st.expander("Revisar registros con costo no válido", expanded=False):
+            st.dataframe(costos_invalidos, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
