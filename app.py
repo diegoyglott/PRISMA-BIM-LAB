@@ -1,17 +1,20 @@
 """
-Aplicación Streamlit para Análisis Inteligente de Presupuestos de Obra (Anexo N° 4).
+PRISMA SpA Constructora — Plataforma PMO de Control de Costos, Recursos y Curva S.
 
 Características principales:
-- Lectura de libros .xlsx con openpyxl (data_only=True) para obtener valores evaluados de fórmulas.
-- Detección automática o manual de encabezados y mapeo flexible de columnas.
-- Limpieza jerárquica (Capítulos, Subcapítulos/Partidas principales y Subpartidas/Recursos),
-  eliminación de subtotales duplicados y separación de filas resumen de pie de presupuesto.
-- Conversión segura de formatos numéricos y de moneda, y detección normalizada de m².
-- Panel de métricas clave, 3 gráficos profesionales con Matplotlib y descarga en Excel / CSV.
+- Lectura en una sola pasada con openpyxl (data_only=True, read_only=True) y @st.cache_data
+  para archivos .xlsx (incluyendo libros Anexo N° 4 multi-hoja con desglose APU) y respaldo .xls.
+- Mapeador dinámico de columnas y detector inteligente para planillas de Presto,
+  Arquímedes, MS Project, Primavera P6 o plantillas propias.
+- Generador realista de datos de ejemplo (Modo Demo) con PV y EV.
+- Dashboard ejecutivo en Streamlit con identidad visual PRISMA SpA Constructora,
+  gráficos interactivos Plotly (Dona, Top 15, Pareto 80/20, Treemap, Curva S) y
+  exportación limpia a Excel (.xlsx).
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import io
 import math
@@ -20,87 +23,85 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
+import numpy as np
 import openpyxl
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 
 # ---------------------------------------------------------------------------
-# Configuración de página y estilos
+# Identidad visual PRISMA SpA Constructora y configuración de página
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Análisis de Presupuesto de Obra",
+    page_title="PRISMA SpA | Control PMO & Presupuestos",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-ARCHIVO_LOCAL_DEFECTO = Path(__file__).resolve().parent / "7.21.5_Anexo_N°_4_Presupuesto.xlsx"
+PRISMA_NAVY = "#153352"
+PRISMA_NAVY_DARK = "#0E2238"
+PRISMA_GOLD = "#C89236"
+PRISMA_SLATE = "#5A6570"
+PRISMA_BG = "#F3F4F6"
+PRISMA_CARD = "#FFFFFF"
+PRISMA_PALETTE = [
+    "#153352",
+    "#C89236",
+    "#3E6B89",
+    "#64748B",
+    "#9A6B21",
+    "#2A4D6E",
+    "#8C939A",
+]
 
-# Palabras clave normalizadas para detección automática de encabezados
+BASE_DIR = Path(__file__).resolve().parent
+ARCHIVO_LOCAL_DEFECTO = BASE_DIR / "7.21.5_Anexo_N°_4_Presupuesto.xlsx"
+LOGO_PRISMA_PATH = BASE_DIR / "assets" / "prisma_logo.jpg"
+
+# Palabras clave para detección de encabezados y mapeo dinámico
 HEADER_KEYWORDS: dict[str, list[str]] = {
-    "item": [
-        "item",
-        "codigo",
-        "cod",
-        "nro",
-        "numero",
-        "n°",
-        "no.",
-    ],
-    "descripcion": [
+    "codigo": ["codigo", "id", "item", "cod", "nro", "numero", "n°"],
+    "partida": [
+        "partida",
         "designacion",
         "descripcion",
-        "descripcion recurso",
         "actividad",
-        "partida",
         "especificacion",
-        "detalle",
-        "recurso",
-        "glosa",
         "concepto",
+        "glosa",
     ],
-    "unidad": [
-        "unidad",
-        "un.",
-        "un",
-        "u",
-        "und",
-        "um",
-        "u.m.",
-    ],
-    "cantidad": [
-        "cantidad",
-        "cant",
-        "cant.",
-        "cubicacion",
-        "metrado",
-        "rendimiento",
-    ],
+    "capitulo": ["capitulo", "especialidad", "area", "wbs", "grupo", "rubro"],
+    "recurso": ["recurso", "insumo", "material", "descripcion recurso", "detalle"],
+    "tipo_recurso": ["tipo", "categoria", "tipo de recurso", "naturaleza", "clase"],
+    "unidad": ["unidad", "und", "un.", "un", "u", "um", "u.m."],
+    "cantidad": ["cantidad", "cant", "cant.", "metrado", "cubicacion", "rendimiento"],
     "precio_unitario": [
         "precio unitario",
-        "costo unitario directo ($)",
-        "costo unitario directo",
-        "costo unitario",
-        "valor unitario",
+        "precio_unitario",
+        "pu",
         "p.u.",
         "p.u",
-        "pu",
+        "valor unitario",
+        "costo unitario",
         "valor",
         "precio",
-        "sueldo",
     ],
     "total": [
         "costo total",
+        "costo_total",
         "valor total",
         "total ($)",
         "total",
+        "parcial",
         "monto",
         "importe",
-        "subtotal",
     ],
+    "fecha": ["fecha", "periodo", "mes", "semana", "fecha inicio", "fecha_inicio"],
+    "costo_real": ["costo_real", "costo real", "ev", "ejecutado", "avance real", "real"],
 }
 
 FOOTER_SUMMARY_TOKENS = {
@@ -130,38 +131,151 @@ SUBTOTAL_PREFIXES = (
     "TOTAL HOJA",
 )
 
-M2_TOKENS = {
-    "M2",
-    "M²",
-    "MT2",
-    "MTS2",
-    "METRO CUADRADO",
-    "METROS CUADRADOS",
-}
+
+# ---------------------------------------------------------------------------
+# Inyección de estilos CSS corporativos (PRISMA SpA Constructora)
+# ---------------------------------------------------------------------------
+def aplicar_estilos_prisma() -> None:
+    """Aplica estilos corporativos inspirados en concreto arquitectónico, azul marino y ocre."""
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-color: {PRISMA_BG};
+        }}
+        .prisma-header {{
+            background: linear-gradient(135deg, {PRISMA_NAVY_DARK} 0%, {PRISMA_NAVY} 68%, #204A73 100%);
+            border-bottom: 4px solid {PRISMA_GOLD};
+            border-radius: 12px;
+            padding: 1.15rem 1.5rem;
+            margin-bottom: 1.1rem;
+            color: #FFFFFF;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.25rem;
+            box-shadow: 0 4px 16px rgba(21, 51, 82, 0.14);
+        }}
+        .prisma-header-left {{
+            display: flex;
+            align-items: center;
+            gap: 1.1rem;
+        }}
+        .prisma-logo-box {{
+            background: #EAECEF;
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(200, 146, 54, 0.45);
+            display: flex;
+            align-items: center;
+        }}
+        .prisma-logo-box img {{
+            height: 54px;
+            width: auto;
+            object-fit: contain;
+        }}
+        .prisma-title {{
+            margin: 0;
+            font-size: 1.48rem;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            color: #FFFFFF;
+        }}
+        .prisma-subtitle {{
+            margin: 0.22rem 0 0 0;
+            font-size: 0.9rem;
+            color: #D7E2EE;
+        }}
+        .prisma-badge {{
+            background: rgba(200, 146, 54, 0.18);
+            border: 1px solid {PRISMA_GOLD};
+            color: #F6D89C;
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }}
+        div[data-testid="stMetric"] {{
+            background-color: {PRISMA_CARD};
+            border: 1px solid #E2E8F0;
+            border-top: 3px solid {PRISMA_NAVY};
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+        }}
+        div[data-testid="stMetricLabel"] p {{
+            font-weight: 600;
+            color: {PRISMA_SLATE};
+            font-size: 0.84rem;
+        }}
+        div[data-testid="stMetricValue"] {{
+            color: {PRISMA_NAVY};
+            font-weight: 700;
+        }}
+        button[data-baseweb="tab"] {{
+            font-weight: 600;
+            color: {PRISMA_SLATE};
+        }}
+        button[data-baseweb="tab"][aria-selected="true"] {{
+            color: {PRISMA_NAVY} !important;
+            border-bottom-color: {PRISMA_GOLD} !important;
+        }}
+        section[data-testid="stSidebar"] {{
+            background-color: #FFFFFF;
+            border-right: 1px solid #E2E8F0;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_banner_corporativo(meta_texto: str, modo_badge: str) -> None:
+    """Muestra la cabecera corporativa con el logo de PRISMA SpA Constructora."""
+    logo_html = ""
+    if LOGO_PRISMA_PATH.exists():
+        img_b64 = base64.b64encode(LOGO_PRISMA_PATH.read_bytes()).decode("ascii")
+        logo_html = f'<div class="prisma-logo-box"><img src="data:image/jpeg;base64,{img_b64}" alt="PRISMA SpA Constructora"/></div>'
+
+    st.markdown(
+        f"""
+        <div class="prisma-header">
+            <div class="prisma-header-left">
+                {logo_html}
+                <div>
+                    <h1 class="prisma-title">Control Ejecutivo de Presupuestos, Recursos y Curva S</h1>
+                    <p class="prisma-subtitle">{meta_texto}</p>
+                </div>
+            </div>
+            <div class="prisma-badge">{modo_badge}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Funciones auxiliares de normalización y parsing seguro
+# Funciones auxiliares de normalización, unidades y parsing seguro
 # ---------------------------------------------------------------------------
 def normalizar_texto(valor: Any) -> str:
-    """Convierte texto a minúsculas sin tildes ni espacios redundantes."""
+    """Convierte texto a minúsculas sin tildes ni espacios múltiples."""
     if valor is None:
         return ""
     texto = str(valor).strip().lower()
     texto = unicodedata.normalize("NFKD", texto)
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
-    texto = re.sub(r"\s+", " ", texto)
-    return texto
+    return re.sub(r"\s+", " ", texto)
 
 
 def normalizar_unidad_estandar(valor: Any) -> str:
-    """Normaliza una unidad de medida para filtrado uniforme (ej. m2, m², M2 -> M2)."""
+    """Normaliza unidades de medida evitando duplicados (m2/m² -> M2, U/UN/UNI -> UN)."""
     if valor is None:
         return ""
     raw = str(valor).strip()
     if not raw or raw.lower() in {"none", "nan", "-"}:
         return ""
-    norm = normalizar_texto(raw).upper().replace("²", "2").replace(".", "").strip()
+    norm = normalizar_texto(raw).upper().replace("²", "2").replace("³", "3").replace(".", "").strip()
     compact = re.sub(r"\s+", "", norm)
     if compact in {"M2", "MT2", "MTS2", "METROCUADRADO", "METROSCUADRADOS"}:
         return "M2"
@@ -174,53 +288,65 @@ def normalizar_unidad_estandar(valor: Any) -> str:
     if compact in {"KG", "KGS", "KILO", "KILOS"}:
         return "KG"
     if compact in {"U", "UN", "UND", "UNI", "UNIDAD", "UNIDADES"}:
-        return norm  # Mantiene U/UN/UNI legible o agrupable en mayúsculas
+        return "UN"
+    if compact in {"DIA", "DIAS", "DÍA", "DÍAS"}:
+        return "DÍA"
+    if compact in {"HH", "HR", "HRS", "HORA", "HORAS"}:
+        return "HH"
     return norm
 
 
-def es_metro_cuadrado(valor: Any) -> bool:
-    """Determina si la unidad corresponde a metros cuadrados (m2, m², M2, etc.)."""
-    if valor is None:
-        return False
-    norm = normalizar_texto(valor).upper().replace("²", "2").replace(".", "")
-    compact = re.sub(r"\s+", "", norm)
-    if compact in {"M2", "MT2", "MTS2", "METROCUADRADO", "METROSCUADRADOS"}:
-        return True
-    return norm.strip() in M2_TOKENS
+def normalizar_tipo_recurso(valor: Any, codigo_recurso: str = "") -> str:
+    """Agrupa los tipos de recurso en categorías estándar de control PMO."""
+    norm = normalizar_texto(valor)
+    cod = str(codigo_recurso).strip().upper()
+
+    if any(k in norm for k in ("mano de obra", "mano obra", "mo", "jornal", "operario", "maestro", "leyes sociales")):
+        return "Mano de Obra"
+    if any(k in norm for k in ("material", "insumo", "mat")):
+        return "Materiales"
+    if any(k in norm for k in ("maquin", "equipo", "herramienta", "maq", "arriendo")):
+        return "Maquinaria / Equipos"
+    if any(k in norm for k in ("subcontrat", "servicio", "tercero", "sub")):
+        return "Subcontratos"
+
+    if cod.startswith("MAT"):
+        return "Materiales"
+    if cod.startswith("MO"):
+        return "Mano de Obra"
+    if cod.startswith("MAQ") or cod.startswith("EQ"):
+        return "Maquinaria / Equipos"
+    if cod.startswith("SUB"):
+        return "Subcontratos"
+
+    return str(valor).strip() if valor is not None and str(valor).strip() else "Otros / Partida Directa"
 
 
 def parsear_numero(valor: Any) -> float | None:
-    """
-    Convierte de forma segura celdas numéricas o cadenas con formato de moneda a float.
-    Soporta formatos chilenos/europeos ($ 4.100.000 / 1.234,56) y US (1,234.56).
-    """
+    """Convierte de forma segura celdas numéricas o texto con formato moneda a float."""
     if valor is None or isinstance(valor, bool):
         return None
-    if isinstance(valor, (int, float)):
-        if math.isnan(valor) or math.isinf(valor):
-            return None
-        return float(valor)
+    if isinstance(valor, (int, float, np.number)):
+        fval = float(valor)
+        return None if (math.isnan(fval) or math.isinf(fval)) else fval
 
     texto = str(valor).strip()
     if not texto:
         return None
 
-    # Valores simbólicos que representan cero o vacío
-    limpio_basico = texto.replace("$", "").replace("CLP", "").replace("USD", "").strip()
-    if limpio_basico in {"-", "—", "–", "N/A", "NA", "S/I", "None", "nan"}:
+    limpio = texto.replace("$", "").replace("CLP", "").replace("USD", "").strip()
+    if limpio in {"-", "—", "–", "N/A", "NA", "S/I", "None", "nan", ""}:
         return None
 
     tiene_moneda = "$" in texto or "CLP" in texto.upper() or "USD" in texto.upper()
     negativo = False
-    if limpio_basico.startswith("(") and limpio_basico.endswith(")"):
+    if limpio.startswith("(") and limpio.endswith(")"):
         negativo = True
-        limpio_basico = limpio_basico[1:-1].strip()
+        limpio = limpio[1:-1].strip()
 
-    # Conservar dígitos, signos, puntos y comas
-    candidato = re.sub(r"[^\d.,\-]", "", limpio_basico)
+    candidato = re.sub(r"[^\d.,\-]", "", limpio)
     if not candidato or candidato in {"-", ".", ","}:
         return None
-
     if candidato.startswith("-"):
         negativo = True
         candidato = candidato[1:]
@@ -228,28 +354,17 @@ def parsear_numero(valor: Any) -> float | None:
     if not candidato:
         return None
 
-    # Resolución de separadores decimales y de miles
     if "." in candidato and "," in candidato:
-        # El último separador define el decimal
         if candidato.rfind(",") > candidato.rfind("."):
             candidato = candidato.replace(".", "").replace(",", ".")
         else:
             candidato = candidato.replace(",", "")
     elif "," in candidato:
-        # Múltiples comas -> separador de miles; una coma -> decimal
-        if candidato.count(",") > 1:
-            candidato = candidato.replace(",", "")
-        else:
-            candidato = candidato.replace(",", ".")
+        candidato = candidato.replace(",", "") if candidato.count(",") > 1 else candidato.replace(",", ".")
     elif "." in candidato:
         partes = candidato.split(".")
-        if len(partes) > 2:
-            # Ej. 4.100.000 -> miles
+        if len(partes) > 2 or (len(partes) == 2 and len(partes[1]) == 3 and tiene_moneda):
             candidato = "".join(partes)
-        elif len(partes) == 2 and len(partes[1]) == 3 and tiene_moneda:
-            # Ej. $ 400.000 -> miles en moneda
-            candidato = "".join(partes)
-        # En otro caso (ej. "23.446"), se mantiene como decimal
 
     try:
         numero = float(candidato)
@@ -259,177 +374,187 @@ def parsear_numero(valor: Any) -> float | None:
 
 
 def normalizar_item(valor: Any, capitulo_actual: str = "") -> str:
-    """
-    Normaliza el código de ítem:
-    - Enteros almacenados como float (1.0 -> '1').
-    - Códigos convertidos accidentalmente en fecha por Excel (ej. '10.1' -> 2026-01-10 -> '10.1').
-    """
+    """Normaliza códigos de ítem (1.0 -> '1') y recupera códigos convertidos a fecha por Excel (10.1)."""
     if valor is None:
         return ""
-
-    if isinstance(valor, (dt.datetime, dt.date)):
-        # En configuración regional DD-MM, "5.4" se convierte en día=5, mes=4
+    if isinstance(valor, (dt.datetime, dt.date, pd.Timestamp)):
         cap_num = capitulo_actual.split(" - ")[0].strip() if capitulo_actual else ""
         dia_mes = f"{valor.day}.{valor.month}"
         mes_dia = f"{valor.month}.{valor.day}"
         if cap_num and str(valor.month) == cap_num and str(valor.day) != cap_num:
             return mes_dia
         return dia_mes
-
-    if isinstance(valor, int):
-        return str(valor)
-
-    if isinstance(valor, float):
-        if math.isnan(valor) or math.isinf(valor):
+    if isinstance(valor, (int, np.integer)):
+        return str(int(valor))
+    if isinstance(valor, (float, np.floating)):
+        if math.isnan(float(valor)) or math.isinf(float(valor)):
             return ""
-        if valor.is_integer():
-            return str(int(valor))
-        return f"{valor:g}"
-
+        return str(int(valor)) if float(valor).is_integer() else f"{float(valor):g}"
     texto = str(valor).strip()
-    if re.fullmatch(r"\d+\.0+", texto):
-        return texto.split(".")[0]
-    return texto
+    return texto.split(".")[0] if re.fullmatch(r"\d+\.0+", texto) else texto
 
 
-def formato_moneda(valor: float, decimales: int = 0) -> str:
-    """Formatea un valor numérico como moneda legible con separador de miles '.'."""
+def formato_moneda(valor: float | None, decimales: int = 0) -> str:
+    """Formatea un valor numérico como moneda legible con separador de miles."""
     if valor is None or (isinstance(valor, float) and math.isnan(valor)):
         return "$ 0"
-    if decimales == 0:
-        texto = f"{valor:,.0f}"
-    else:
-        texto = f"{valor:,.{decimales}f}"
-    # Estilo chileno/latino: punto para miles, coma para decimales
+    texto = f"{valor:,.{decimales}f}"
     texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"$ {texto}"
 
 
-def formato_numero(valor: float, decimales: int = 2) -> str:
-    """Formatea cantidades numéricas con separador de miles '.' y decimal ','."""
+def formato_numero(valor: float | None, decimales: int = 2) -> str:
+    """Formatea números con separador de miles '.' y decimal ','."""
     if valor is None or (isinstance(valor, float) and math.isnan(valor)):
         return "0"
     texto = f"{valor:,.{decimales}f}"
     return texto.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def acortar_etiqueta(texto: str, max_len: int = 44) -> str:
-    """Acorta etiquetas largas para gráficos sin perder legibilidad."""
+def acortar_etiqueta(texto: str, max_len: int = 40) -> str:
+    """Acorta etiquetas largas manteniendo claridad en gráficos."""
     texto = re.sub(r"\s+", " ", str(texto)).strip()
-    if len(texto) <= max_len:
-        return texto
-    return texto[: max_len - 1].rstrip() + "…"
+    return texto if len(texto) <= max_len else texto[: max_len - 1].rstrip() + "…"
 
 
 # ---------------------------------------------------------------------------
-# Lectura con openpyxl y detección inteligente de encabezados
+# Lectura optimizada en una sola pasada (@st.cache_data)
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def obtener_nombres_hojas(file_bytes: bytes) -> list[str]:
-    """Lee los nombres de hojas del archivo .xlsx usando openpyxl con data_only=True."""
-    wb = None
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-        return list(wb.sheetnames)
-    finally:
-        if wb is not None:
-            wb.close()
-
-
-@st.cache_data(show_spinner=False)
-def leer_hoja_cruda(file_bytes: bytes, sheet_name: str) -> list[tuple[Any, ...]]:
-    """Extrae todas las filas evaluadas (data_only=True) de la hoja seleccionada."""
-    wb = None
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-        if sheet_name not in wb.sheetnames:
-            raise ValueError(f"La hoja '{sheet_name}' no existe en el libro.")
-        ws = wb[sheet_name]
-        filas: list[tuple[Any, ...]] = []
-        for fila in ws.iter_rows(values_only=True):
-            filas.append(tuple(fila))
-        return filas
-    finally:
-        if wb is not None:
-            wb.close()
-
-
-def seleccionar_hoja_por_defecto(sheetnames: list[str]) -> int:
-    """Elige automáticamente la hoja principal de presupuesto si existe."""
+def seleccionar_hoja_por_defecto(sheetnames: list[str]) -> str:
+    """Selecciona la hoja principal de presupuesto si existe."""
     prioridad = ["PPTO MODIFICADO", "PRESUPUESTO", "PPTO", "RESUMEN", "ANEXO"]
-    norm_sheets = [normalizar_texto(s).upper() for s in sheetnames]
     for clave in prioridad:
-        for idx, s in enumerate(norm_sheets):
-            if clave in s:
-                return idx
-    return 0
+        for sheet in sheetnames:
+            if clave in normalizar_texto(sheet).upper():
+                return sheet
+    return sheetnames[0]
 
 
+def detectar_hojas_apu(sheetnames: list[str]) -> set[str]:
+    """Identifica hojas de Análisis de Precios Unitarios cuyo nombre es un código (ej. '1.1.1', '2.9.1')."""
+    patron = re.compile(r"^\d+(\.\d+)+$")
+    return {s for s in sheetnames if patron.fullmatch(s.strip())}
+
+
+@st.cache_data(show_spinner=False)
+def cargar_libro_y_hoja_unica(
+    file_bytes: bytes, nombre_archivo: str, hoja_objetivo: str | None = None
+) -> dict[str, Any]:
+    """
+    Lee el libro Excel en UNA sola apertura (evitando duplicar tiempos en archivos >10 MB).
+    Extrae:
+      - sheetnames
+      - hoja_activa
+      - filas de la hoja seleccionada
+      - si existen hojas APU vinculadas, extrae también su desglose de recursos en la misma pasada.
+    """
+    ext = Path(nombre_archivo).suffix.lower()
+
+    if ext == ".xls":
+        xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd")
+        sheetnames = list(xls.sheet_names)
+        if not sheetnames:
+            raise ValueError("El archivo .xls no contiene hojas.")
+        hoja = hoja_objetivo if hoja_objetivo in sheetnames else seleccionar_hoja_por_defecto(sheetnames)
+        df_raw = xls.parse(hoja, header=None)
+        filas = [tuple(None if pd.isna(v) else v for v in row) for row in df_raw.itertuples(index=False, name=None)]
+        return {
+            "sheetnames": sheetnames,
+            "hoja": hoja,
+            "filas": filas,
+            "apu_sheets": {},
+            "tiene_estructura_apu": False,
+        }
+
+    wb = None
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        sheetnames = list(wb.sheetnames)
+        if not sheetnames:
+            raise ValueError("El libro Excel no contiene hojas visibles.")
+
+        hoja = hoja_objetivo if hoja_objetivo in sheetnames else seleccionar_hoja_por_defecto(sheetnames)
+        ws = wb[hoja]
+        filas = [tuple(row) for row in ws.iter_rows(values_only=True)]
+
+        hojas_apu_nombres = detectar_hojas_apu(sheetnames)
+        tiene_apu = len(hojas_apu_nombres) >= 5 and hoja == seleccionar_hoja_por_defecto(sheetnames)
+        apu_sheets: dict[str, list[tuple[Any, ...]]] = {}
+
+        if tiene_apu:
+            for apu_name in hojas_apu_nombres:
+                ws_apu = wb[apu_name]
+                apu_sheets[apu_name] = [tuple(r) for r in ws_apu.iter_rows(max_row=80, values_only=True)]
+
+        return {
+            "sheetnames": sheetnames,
+            "hoja": hoja,
+            "filas": filas,
+            "apu_sheets": apu_sheets,
+            "tiene_estructura_apu": tiene_apu,
+        }
+    finally:
+        if wb is not None:
+            wb.close()
+
+
+# ---------------------------------------------------------------------------
+# Detección de encabezados, metadatos y mapeo dinámico
+# ---------------------------------------------------------------------------
 def detectar_fila_encabezado(filas: list[tuple[Any, ...]], max_scan: int = 60) -> int:
-    """
-    Detecta la fila (1-based) donde comienzan los encabezados de la tabla
-    buscando palabras clave típicas de presupuestos de construcción.
-    """
+    """Detecta la fila (1-based) de encabezados según palabras clave de control de proyectos."""
     mejor_fila = 1
     mejor_puntaje = -1.0
 
-    limite = min(len(filas), max_scan)
-    for idx in range(limite):
+    for idx in range(min(len(filas), max_scan)):
         celdas = [normalizar_texto(c) for c in filas[idx]]
         no_vacias = [c for c in celdas if c]
         if len(no_vacias) < 3:
             continue
 
-        roles_encontrados: set[str] = set()
+        roles: set[str] = set()
         for celda in no_vacias:
             for rol, keywords in HEADER_KEYWORDS.items():
                 if any(celda == kw or (len(kw) >= 4 and kw in celda) for kw in keywords):
-                    roles_encontrados.add(rol)
+                    roles.add(rol)
 
-        # Ponderación adicional si aparecen descripción + total o cantidad
-        puntaje = float(len(roles_encontrados))
-        if "descripcion" in roles_encontrados:
+        puntaje = float(len(roles))
+        if "partida" in roles:
             puntaje += 0.6
-        if "total" in roles_encontrados:
+        if "total" in roles:
             puntaje += 0.5
-        if "item" in roles_encontrados:
+        if "codigo" in roles:
             puntaje += 0.4
-        if "unidad" in roles_encontrados:
+        if "unidad" in roles:
             puntaje += 0.3
 
-        if puntaje > mejor_puntaje and len(roles_encontrados) >= 3:
+        if puntaje > mejor_puntaje and len(roles) >= 3:
             mejor_puntaje = puntaje
             mejor_fila = idx + 1
 
     return mejor_fila
 
 
-def extraer_metadatos_proyecto(
-    filas: list[tuple[Any, ...]], header_row_1based: int
-) -> dict[str, str]:
-    """Extrae metadatos institucionales (Proyecto, Ubicación, Contratista, etc.) sobre el encabezado."""
+def extraer_metadatos_proyecto(filas: list[tuple[Any, ...]], header_row_1based: int) -> dict[str, str]:
+    """Extrae metadatos de cabecera institucional sobre la tabla."""
     metadatos: dict[str, str] = {}
-    claves_interes = {
+    claves = {
         "proyecto": "Proyecto",
         "ubicacion": "Ubicación",
         "contratista": "Contratista",
-        "obra": "Obra",
         "mandante": "Mandante",
+        "obra": "Obra",
         "fecha": "Fecha",
     }
-
     for fila in filas[: max(0, header_row_1based - 1)]:
         valores = [v for v in fila if v is not None and str(v).strip() != ""]
         if len(valores) < 2:
             continue
-        etiqueta_norm = normalizar_texto(valores[0]).rstrip(":").strip()
-        for clave, nombre_mostrar in claves_interes.items():
-            if etiqueta_norm == clave or etiqueta_norm.startswith(clave):
-                valor = valores[1]
-                if isinstance(valor, (dt.datetime, dt.date)):
-                    metadatos[nombre_mostrar] = valor.strftime("%d-%m-%Y")
-                else:
-                    metadatos[nombre_mostrar] = str(valor).strip()
+        etiqueta = normalizar_texto(valores[0]).rstrip(":").strip()
+        for k, label in claves.items():
+            if etiqueta == k or etiqueta.startswith(k):
+                val = valores[1]
+                metadatos[label] = val.strftime("%d-%m-%Y") if isinstance(val, (dt.datetime, dt.date)) else str(val).strip()
                 break
     return metadatos
 
@@ -437,17 +562,16 @@ def extraer_metadatos_proyecto(
 def construir_opciones_columnas(
     fila_encabezado: tuple[Any, ...], max_cols: int
 ) -> tuple[list[str], dict[str, int]]:
-    """Construye etiquetas únicas para cada columna del encabezado y su índice 0-based."""
+    """Genera nombres únicos por columna y su índice 0-based."""
     etiquetas: list[str] = []
-    mapa_indices: dict[str, int] = {}
+    mapa_idx: dict[str, int] = {}
     conteo: dict[str, int] = {}
 
     for col_idx in range(max_cols):
         val = fila_encabezado[col_idx] if col_idx < len(fila_encabezado) else None
-        nombre = str(val).strip() if val is not None and str(val).strip() != "" else ""
+        nombre = str(val).strip() if val is not None and str(val).strip() else ""
         if not nombre:
-            letra_col = openpyxl.utils.get_column_letter(col_idx + 1)
-            nombre = f"Columna {letra_col}"
+            nombre = f"Columna {openpyxl.utils.get_column_letter(col_idx + 1)}"
 
         if nombre in conteo:
             conteo[nombre] += 1
@@ -455,23 +579,15 @@ def construir_opciones_columnas(
         else:
             conteo[nombre] = 1
             nombre_unico = nombre
-
         etiquetas.append(nombre_unico)
-        mapa_indices[nombre_unico] = col_idx
+        mapa_idx[nombre_unico] = col_idx
 
-    return etiquetas, mapa_indices
+    return etiquetas, mapa_idx
 
 
 def sugerir_mapeo_columnas(etiquetas: list[str]) -> dict[str, str | None]:
-    """Sugiere automáticamente la mejor columna para cada rol presupuestario."""
-    sugerencias: dict[str, str | None] = {
-        "item": None,
-        "descripcion": None,
-        "unidad": None,
-        "cantidad": None,
-        "precio_unitario": None,
-        "total": None,
-    }
+    """Sugiere automáticamente las columnas clave del presupuesto o programación."""
+    sugerencias: dict[str, str | None] = {rol: None for rol in HEADER_KEYWORDS}
     usadas: set[str] = set()
 
     for rol, keywords in HEADER_KEYWORDS.items():
@@ -483,12 +599,12 @@ def sugerir_mapeo_columnas(etiquetas: list[str]) -> dict[str, str | None]:
             norm = normalizar_texto(etiqueta)
             if not norm or norm.startswith("columna "):
                 continue
-            for prioridad_idx, kw in enumerate(keywords):
+            for prioridad, kw in enumerate(keywords):
                 score = 0
                 if norm == kw:
-                    score = 100 - prioridad_idx
+                    score = 100 - prioridad
                 elif len(kw) >= 4 and kw in norm:
-                    score = 60 - prioridad_idx
+                    score = 60 - prioridad
                 if score > mejor_score:
                     mejor_score = score
                     mejor_col = etiqueta
@@ -499,96 +615,232 @@ def sugerir_mapeo_columnas(etiquetas: list[str]) -> dict[str, str | None]:
     return sugerencias
 
 
+def detectar_columnas_periodos_matriciales(etiquetas: list[str], usadas: set[str]) -> list[str]:
+    """Detecta columnas matriciales de periodos (ej. 'Mes 1', 'Ene-26', 'Sem 01', '2026-03')."""
+    patron_periodo = re.compile(
+        r"^(mes\s*\d+|sem(ana)?\s*\d+|p\d+|(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[-/\s]?\d{2,4}|\d{4}[-/]\d{2})$",
+        re.IGNORECASE,
+    )
+    cols_periodo: list[str] = []
+    for et in etiquetas:
+        if et in usadas:
+            continue
+        norm = normalizar_texto(et)
+        if patron_periodo.match(norm):
+            cols_periodo.append(et)
+    return cols_periodo
+
+
 # ---------------------------------------------------------------------------
-# Limpieza inteligente y clasificación jerárquica
+# Extracción de recursos desde hojas APU (Anexo N° 4) y tabla plana
 # ---------------------------------------------------------------------------
+def parsear_hoja_apu(
+    codigo_partida: str,
+    nombre_partida: str,
+    capitulo: str,
+    unidad_partida: str,
+    cantidad_partida: float,
+    total_partida: float,
+    filas_apu: list[tuple[Any, ...]],
+) -> list[dict[str, Any]]:
+    """
+    Extrae los insumos (A- Materiales, B- Maquinas, C- Mano de Obra, D- Subcontratos)
+    desde una hoja APU y escala sus cantidades y montos a la cantidad total de la partida.
+    """
+    recursos: list[dict[str, Any]] = []
+    tipo_actual = "Materiales"
+    en_seccion_recursos = False
+    total_apu_acumulado = 0.0
+
+    for fila in filas_apu:
+        celda_cod = fila[1] if len(fila) > 1 else None
+        celda_desc = fila[2] if len(fila) > 2 else None
+        celda_rend = fila[3] if len(fila) > 3 else None
+        celda_unit = fila[4] if len(fila) > 4 else None
+        celda_perd = fila[5] if len(fila) > 5 else None
+        celda_pu = fila[6] if len(fila) > 6 else None
+        celda_tot = fila[7] if len(fila) > 7 else None
+
+        texto_cod = str(celda_cod).strip() if celda_cod is not None else ""
+        norm_cod = normalizar_texto(texto_cod)
+
+        # Cambio de sección APU (solo tras entrar a A- Materiales / B- / C- / D-)
+        if norm_cod.startswith(("a-", "a -")):
+            tipo_actual = "Materiales"
+            en_seccion_recursos = True
+            continue
+        if norm_cod.startswith(("b-", "b -")):
+            tipo_actual = "Maquinaria / Equipos"
+            en_seccion_recursos = True
+            continue
+        if norm_cod.startswith(("c-", "c -")):
+            tipo_actual = "Mano de Obra"
+            en_seccion_recursos = True
+            continue
+        if norm_cod.startswith(("d-", "d -")):
+            tipo_actual = "Subcontratos"
+            en_seccion_recursos = True
+            continue
+
+        if not en_seccion_recursos:
+            continue
+
+        # Saltar encabezados internos, subtotales y pie de firma
+        if norm_cod in {"codigo", "item"}:
+            continue
+        if celda_pu and "subtotal" in normalizar_texto(celda_pu):
+            continue
+        if "total costo unitario" in norm_cod or "firma" in norm_cod:
+            break
+
+        tot_unit_apu = parsear_numero(celda_tot)
+        if tot_unit_apu is None or tot_unit_apu == 0:
+            continue
+
+        desc_rec = re.sub(r"\s+", " ", str(celda_desc)).strip() if celda_desc is not None else ""
+        # Caso especial: Leyes Sociales en Mano de Obra (viene en celda_perd cuando desc está vacía)
+        if not desc_rec and celda_perd is not None and isinstance(celda_perd, str):
+            desc_rec = celda_perd.strip()
+        if not desc_rec:
+            continue
+
+        rend = parsear_numero(celda_rend)
+        perd = parsear_numero(celda_perd)
+        pu_insumo = parsear_numero(celda_pu)
+        unit_rec = normalizar_unidad_estandar(celda_unit) or ("%" if "leyes" in normalizar_texto(desc_rec) else "UN")
+
+        if rend is not None and rend > 0:
+            factor_perd = perd if (perd is not None and perd > 0) else 1.0
+            cant_total_recurso = rend * factor_perd * cantidad_partida
+        else:
+            cant_total_recurso = cantidad_partida
+
+        monto_total_recurso = tot_unit_apu * cantidad_partida
+        pu_efectivo = (
+            pu_insumo
+            if (pu_insumo is not None and pu_insumo > 1 and "leyes" not in normalizar_texto(desc_rec))
+            else (monto_total_recurso / cant_total_recurso if cant_total_recurso > 0 else tot_unit_apu)
+        )
+
+        total_apu_acumulado += monto_total_recurso
+        recursos.append(
+            {
+                "Código": codigo_partida,
+                "Partida": nombre_partida,
+                "Capítulo": capitulo,
+                "Unidad_Partida": unidad_partida,
+                "Cantidad_Partida": cantidad_partida,
+                "Código_Recurso": texto_cod,
+                "Recurso": desc_rec,
+                "Tipo_Recurso": tipo_actual,
+                "Unidad": unit_rec,
+                "Cantidad": cant_total_recurso,
+                "Precio_Unitario": pu_efectivo,
+                "Total": monto_total_recurso,
+                "Fecha": pd.NaT,
+                "Costo_Real": np.nan,
+            }
+        )
+
+    # Ajuste proporcional mínimo si hubiera diferencia de redondeo con el total oficial de la partida
+    if recursos and total_apu_acumulado > 0 and abs(total_apu_acumulado - total_partida) > 1.0:
+        factor_ajuste = total_partida / total_apu_acumulado
+        # Solo reescalar si la discrepancia es por redondeo o discrepancia menor (<15%), si es mayor mantener respaldo
+        if 0.85 <= factor_ajuste <= 1.15:
+            for r in recursos:
+                r["Total"] *= factor_ajuste
+        else:
+            return []
+
+    return recursos
+
+
 def es_fila_resumen_pie(
-    item_raw: Any, desc_raw: Any, cant_raw: Any, unit_raw: Any
+    item_raw: Any, desc_raw: Any, cant_raw: Any, unit_raw: Any, pu_raw: Any
 ) -> tuple[bool, str]:
-    """Identifica filas resumen al pie del presupuesto (DIRECTO, GG, UTIL, NETO, IVA, TOTAL)."""
+    """Detecta filas resumen de pie de presupuesto evitando falsos positivos sobre partidas válidas."""
+    tiene_unidad = unit_raw is not None and str(unit_raw).strip() != ""
+    cant_num = parsear_numero(cant_raw)
+    pu_num = parsear_numero(pu_raw)
+
+    # Si tiene unidad y cantidad numérica, es una partida real aunque su nombre contenga 'Total'
+    if tiene_unidad and (cant_num is not None or pu_num is not None):
+        return False, ""
+
     for candidato in (desc_raw, cant_raw, item_raw):
         if candidato is None:
             continue
         norm = normalizar_texto(candidato).upper().rstrip(":").strip()
-        if norm in FOOTER_SUMMARY_TOKENS:
-            return True, norm
-        if any(norm.startswith(pref) for pref in SUBTOTAL_PREFIXES):
-            return True, norm
-        if norm.startswith("$ SUBTOTAL"):
+        if norm in FOOTER_SUMMARY_TOKENS or any(norm.startswith(pref) for pref in SUBTOTAL_PREFIXES):
             return True, norm
 
-    # Si no hay código ni descripción pero sí una etiqueta de texto en cantidad o unidad
-    if item_raw is None and desc_raw is None and isinstance(cant_raw, str):
+    if item_raw is None and desc_raw is None and unit_raw is None and isinstance(cant_raw, str):
         norm_cant = normalizar_texto(cant_raw).upper().strip()
         if norm_cant and parsear_numero(norm_cant) is None:
             return True, norm_cant
-    if item_raw is None and desc_raw is None and unit_raw is None and cant_raw is not None:
-        if isinstance(cant_raw, str):
-            return True, cant_raw.strip()
 
     return False, ""
 
 
-def clasificar_profundidad_item(item_str: str) -> int:
-    """Devuelve la profundidad jerárquica de un código tipo '1', '1.2', '2.8.1.1'."""
-    if not item_str:
-        return 0
-    limpio = item_str.strip().rstrip(".")
-    if re.fullmatch(r"\d+(\.\d+)*", limpio):
-        return len(limpio.split("."))
-    return 0
-
-
-def procesar_presupuesto(
+def procesar_datos_excel(
     filas: list[tuple[Any, ...]],
     header_row_1based: int,
     col_indices: dict[str, int | None],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    etiquetas_cols: list[str],
+    mapa_col_idx: dict[str, int],
+    apu_sheets: dict[str, list[tuple[Any, ...]]],
+    expandir_apu: bool,
+    cols_periodo_matricial: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """
-    Procesa y limpia la tabla presupuestaria desde la fila posterior al encabezado.
+    Transforma la hoja Excel en un DataFrame estándar de Control de Proyectos:
+    [Código, Partida, Capítulo, Recurso, Tipo_Recurso, Unidad, Cantidad,
+     Precio_Unitario, Total, Fecha, Costo_Real].
+    """
+    def celda(fila: tuple[Any, ...], idx: int | None) -> Any:
+        return fila[idx] if (idx is not None and 0 <= idx < len(fila)) else None
 
-    Retorna:
-    - df_partidas: Ítems ejecutables/valorizados (sin capítulos agrupadores ni subtotales duplicados).
-    - df_jerarquia: Tabla completa incluyendo capítulos y subcapítulos detectados.
-    - df_resumen_pie: Filas resumen detectadas al pie (DIRECTO, GG, UTIL, NETO, IVA, TOTAL).
-    """
-    idx_item = col_indices.get("item")
-    idx_desc = col_indices.get("descripcion")
+    idx_cod = col_indices.get("codigo")
+    idx_part = col_indices.get("partida")
+    idx_cap = col_indices.get("capitulo")
+    idx_rec = col_indices.get("recurso")
+    idx_tipo = col_indices.get("tipo_recurso")
     idx_unit = col_indices.get("unidad")
     idx_cant = col_indices.get("cantidad")
     idx_pu = col_indices.get("precio_unitario")
     idx_tot = col_indices.get("total")
+    idx_fecha = col_indices.get("fecha")
+    idx_real = col_indices.get("costo_real")
 
-    def obtener_celda(fila: tuple[Any, ...], idx: int | None) -> Any:
-        if idx is None or idx < 0 or idx >= len(fila):
-            return None
-        return fila[idx]
-
-    registros_raw: list[dict[str, Any]] = []
+    filas_partidas: list[dict[str, Any]] = []
+    filas_recursos_expandidos: list[dict[str, Any]] = []
     resumen_pie: list[dict[str, Any]] = []
+    filas_con_formula_vacia = 0
 
-    capitulo_actual = "Sin Capítulo"
-    subcapitulo_actual = "General"
+    capitulo_actual = "General"
 
     for num_fila, fila in enumerate(filas[header_row_1based:], start=header_row_1based + 1):
-        # Ignorar filas completamente vacías en las columnas mapeadas
-        vals_mapeados = [
-            obtener_celda(fila, i)
-            for i in (idx_item, idx_desc, idx_unit, idx_cant, idx_pu, idx_tot)
+        vals_check = [
+            celda(fila, i)
+            for i in (idx_cod, idx_part, idx_cap, idx_rec, idx_unit, idx_cant, idx_pu, idx_tot)
             if i is not None
         ]
-        if not any(v is not None and str(v).strip() != "" for v in vals_mapeados):
+        if not any(v is not None and str(v).strip() != "" for v in vals_check):
             continue
 
-        raw_item = obtener_celda(fila, idx_item)
-        raw_desc = obtener_celda(fila, idx_desc)
-        raw_unit = obtener_celda(fila, idx_unit)
-        raw_cant = obtener_celda(fila, idx_cant)
-        raw_pu = obtener_celda(fila, idx_pu)
-        raw_tot = obtener_celda(fila, idx_tot)
+        raw_cod = celda(fila, idx_cod)
+        raw_part = celda(fila, idx_part)
+        raw_cap = celda(fila, idx_cap)
+        raw_rec = celda(fila, idx_rec)
+        raw_tipo = celda(fila, idx_tipo)
+        raw_unit = celda(fila, idx_unit)
+        raw_cant = celda(fila, idx_cant)
+        raw_pu = celda(fila, idx_pu)
+        raw_tot = celda(fila, idx_tot)
+        raw_fecha = celda(fila, idx_fecha)
+        raw_real = celda(fila, idx_real)
 
-        # Detectar filas resumen o subtotales al pie
-        es_pie, etiqueta_pie = es_fila_resumen_pie(raw_item, raw_desc, raw_cant, raw_unit)
+        es_pie, etiqueta_pie = es_fila_resumen_pie(raw_cod, raw_part, raw_cant, raw_unit, raw_pu)
         if es_pie:
             tot_pie = parsear_numero(raw_tot)
             pu_pie = parsear_numero(raw_pu)
@@ -596,738 +848,1144 @@ def procesar_presupuesto(
                 resumen_pie.append(
                     {
                         "Concepto": etiqueta_pie,
-                        "Factor / Tasa": pu_pie,
-                        "Monto ($)": tot_pie if tot_pie is not None else pu_pie,
-                        "Fila Excel": num_fila,
+                        "Factor": pu_pie,
+                        "Monto": tot_pie if tot_pie is not None else pu_pie,
                     }
                 )
             continue
 
-        item_str = normalizar_item(raw_item, capitulo_actual)
-        desc_str = re.sub(r"\s+", " ", str(raw_desc)).strip() if raw_desc is not None else ""
-        unit_str = str(raw_unit).strip() if raw_unit is not None else ""
-        unit_estandar = normalizar_unidad_estandar(unit_str)
+        cod_str = normalizar_item(raw_cod, capitulo_actual)
+        part_str = re.sub(r"\s+", " ", str(raw_part)).strip() if raw_part is not None else ""
+        cap_val = re.sub(r"\s+", " ", str(raw_cap)).strip() if raw_cap is not None else ""
+        rec_str = re.sub(r"\s+", " ", str(raw_rec)).strip() if raw_rec is not None else ""
+        unit_str = normalizar_unidad_estandar(raw_unit)
 
         cant_val = parsear_numero(raw_cant)
         pu_val = parsear_numero(raw_pu)
         tot_val = parsear_numero(raw_tot)
+        real_val = parsear_numero(raw_real)
 
-        # Descartar filas plantilla vacías de APU (ej. "MAT-", "MAQ-" sin descripción y total 0)
-        if not desc_str and (tot_val is None or tot_val == 0) and (cant_val is None or cant_val == 0):
+        # Si faltan ambos valores numéricos y código/unidad están vacíos -> nota al pie
+        if not cod_str and not unit_str and cant_val is None and pu_val is None and tot_val is None:
             continue
 
-        # Descartar notas al pie puramente textuales sin código ni valores numéricos
-        if not item_str and not unit_str and cant_val is None and pu_val is None and tot_val is None:
-            continue
-
-        # Si falta el total pero existen cantidad y precio unitario, calcularlo de forma segura
-        if tot_val is None and cant_val is not None and pu_val is not None:
+        if cant_val is not None and pu_val is not None and tot_val is None:
             tot_val = cant_val * pu_val
+        elif cant_val is not None and pu_val is None and tot_val is None:
+            filas_con_formula_vacia += 1
 
-        profundidad = clasificar_profundidad_item(item_str)
+        # Detección de capítulos jerárquicos cuando no existe columna Capítulo explícita
+        profundidad = len(cod_str.split(".")) if re.fullmatch(r"\d+(\.\d+)*", cod_str) else 0
         tiene_valores = any(v is not None for v in (cant_val, pu_val, tot_val)) or bool(unit_str)
 
-        # Diferenciar Capítulos / Partidas principales agrupadoras vs Partidas ejecutables / Recursos
-        if not tiene_valores and desc_str:
-            if profundidad == 1 or (item_str.upper().startswith(("A-", "B-", "C-", "D-")) and not unit_str):
-                capitulo_actual = f"{item_str} - {desc_str}" if item_str else desc_str
-                subcapitulo_actual = desc_str
-                tipo_fila = "Capítulo"
-            else:
-                if profundidad <= 2:
-                    subcapitulo_actual = f"{item_str} - {desc_str}" if item_str else desc_str
-                tipo_fila = "Subcapítulo / Partida Principal"
+        if not cap_val:
+            if not tiene_valores and part_str:
+                if profundidad == 1 or not cod_str:
+                    capitulo_actual = f"{cod_str} - {part_str}" if cod_str else part_str
+                continue
+            elif profundidad == 1 and part_str:
+                capitulo_actual = f"{cod_str} - {part_str}"
+            cap_efectivo = capitulo_actual
         else:
-            # Si viene un ítem de nivel 1 con valores propios, actualizar también el capítulo
-            if profundidad == 1 and desc_str:
-                capitulo_actual = f"{item_str} - {desc_str}"
-                subcapitulo_actual = desc_str
-            elif profundidad == 2 and desc_str:
-                subcapitulo_actual = f"{item_str} - {desc_str}"
-            tipo_fila = "Partida / Recurso"
+            cap_efectivo = cap_val
+            if not tiene_valores:
+                continue
 
-        registros_raw.append(
+        # Parseo seguro de fecha si está mapeada
+        fecha_dt = pd.NaT
+        if raw_fecha is not None and str(raw_fecha).strip() != "":
+            fecha_dt = pd.to_datetime(raw_fecha, errors="coerce", dayfirst=True)
+
+        cant_f = cant_val if cant_val is not None else 0.0
+        pu_f = pu_val if pu_val is not None else 0.0
+        tot_f = tot_val if tot_val is not None else 0.0
+        nombre_partida = part_str or rec_str or f"Ítem {cod_str}"
+
+        # Guardar registro base a nivel partida
+        registro_base = {
+            "Código": cod_str or f"F-{num_fila}",
+            "Partida": nombre_partida,
+            "Capítulo": cap_efectivo,
+            "Unidad_Partida": unit_str or "UN",
+            "Cantidad_Partida": cant_f,
+            "Código_Recurso": cod_str,
+            "Recurso": rec_str or nombre_partida,
+            "Tipo_Recurso": normalizar_tipo_recurso(raw_tipo, cod_str),
+            "Unidad": unit_str or "UN",
+            "Cantidad": cant_f,
+            "Precio_Unitario": pu_f,
+            "Total": tot_f,
+            "Fecha": fecha_dt,
+            "Costo_Real": real_val if real_val is not None else np.nan,
+        }
+
+        # Si hay columnas matriciales de periodos, expandir por periodo
+        if cols_periodo_matricial:
+            agregado_matricial = False
+            for col_p in cols_periodo_matricial:
+                val_p = parsear_numero(celda(fila, mapa_col_idx[col_p]))
+                if val_p is not None and val_p != 0:
+                    reg_p = dict(registro_base)
+                    reg_p["Total"] = val_p
+                    reg_p["Fecha"] = col_p
+                    filas_partidas.append(reg_p)
+                    agregado_matricial = True
+            if not agregado_matricial:
+                filas_partidas.append(registro_base)
+        else:
+            filas_partidas.append(registro_base)
+
+        # Expansión APU si el libro trae hojas APU por código de partida
+        if expandir_apu and cod_str in apu_sheets and cant_f > 0 and tot_f > 0:
+            recs_apu = parsear_hoja_apu(
+                codigo_partida=cod_str,
+                nombre_partida=nombre_partida,
+                capitulo=cap_efectivo,
+                unidad_partida=unit_str or "UN",
+                cantidad_partida=cant_f,
+                total_partida=tot_f,
+                filas_apu=apu_sheets[cod_str],
+            )
+            if recs_apu:
+                filas_recursos_expandidos.extend(recs_apu)
+            else:
+                filas_recursos_expandidos.append(registro_base)
+        elif expandir_apu:
+            filas_recursos_expandidos.append(registro_base)
+
+    datos_finales = filas_recursos_expandidos if (expandir_apu and filas_recursos_expandidos) else filas_partidas
+    df = pd.DataFrame(datos_finales)
+    df_pie = pd.DataFrame(resumen_pie)
+
+    if df.empty:
+        return df, df_pie, {"formulas_vacias": filas_con_formula_vacia, "expandido_apu": False}
+
+    # Filtrar posibles filas padre que son subtotales duplicados (solo en tablas no expandidas)
+    if not (expandir_apu and filas_recursos_expandidos):
+        codigos = [c for c in df["Código"].tolist() if re.fullmatch(r"\d+(\.\d+)*", str(c))]
+        es_padre_sub = []
+        for _, r in df.iterrows():
+            c = str(r["Código"])
+            sin_cant = r["Cantidad"] == 0 and r["Precio_Unitario"] == 0
+            es_padre_sub.append(
+                bool(c and sin_cant and r["Total"] > 0 and any(x != c and x.startswith(f"{c}.") for x in codigos))
+            )
+        df = df[~pd.Series(es_padre_sub, index=df.index)].reset_index(drop=True)
+
+    info_extra = {
+        "formulas_vacias": filas_con_formula_vacia,
+        "expandido_apu": bool(expandir_apu and filas_recursos_expandidos),
+        "partidas_apu_vinculadas": len(
+            {r["Código"] for r in filas_recursos_expandidos if r["Código"] in apu_sheets}
+        )
+        if expandir_apu
+        else 0,
+    }
+    return df, df_pie, info_extra
+
+
+# ---------------------------------------------------------------------------
+# Generador de Datos de Prueba (Modo Demo realista)
+# ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def generar_datos_demo() -> pd.DataFrame:
+    """Genera en memoria un proyecto de edificación completo con fechas, recursos, PV y EV."""
+    partidas_demo = [
+        # (Código, Capítulo, Partida, Und_Partida, Cant_Part, Fecha, Recurso, Tipo, Und_Rec, Cant_Rec, PU, Factor_Real)
+        ("1.1", "01. Obras Preliminares", "Instalación de faenas y cierro", "GL", 1, "2026-03-10", "Cierro perimetral OSB y malla", "Materiales", "ML", 140, 18500, 1.02),
+        ("1.1", "01. Obras Preliminares", "Instalación de faenas y cierro", "GL", 1, "2026-03-15", "Cuadrilla obras preliminares", "Mano de Obra", "DÍA", 18, 42000, 1.05),
+        ("1.2", "01. Obras Preliminares", "Trazado, niveles y replanteo", "M2", 950, "2026-03-22", "Estación total y topógrafo", "Subcontratos", "GL", 1, 950000, 1.00),
+        ("2.1", "02. Obra Gruesa", "Excavación masiva y fundaciones", "M3", 420, "2026-04-05", "Retroexcavadora 90 HP", "Maquinaria / Equipos", "HR", 65, 58000, 1.08),
+        ("2.1", "02. Obra Gruesa", "Excavación masiva y fundaciones", "M3", 420, "2026-04-12", "Jornal excavación manual", "Mano de Obra", "DÍA", 45, 34000, 1.12),
+        ("2.2", "02. Obra Gruesa", "Hormigón H30 fundaciones y pilares", "M3", 285, "2026-04-25", "Hormigón H30 premezclado", "Materiales", "M3", 295, 118000, 1.03),
+        ("2.2", "02. Obra Gruesa", "Hormigón H30 fundaciones y pilares", "M3", 285, "2026-05-08", "Bomba telescópica hormigón", "Maquinaria / Equipos", "HR", 28, 95000, 1.00),
+        ("2.2", "02. Obra Gruesa", "Hormigón H30 fundaciones y pilares", "M3", 285, "2026-05-15", "Concretero y vibrador", "Mano de Obra", "DÍA", 60, 41000, 0.96),
+        ("2.3", "02. Obra Gruesa", "Enfierradura A630-420H", "KG", 24500, "2026-05-12", "Acero A630-420H cortado y doblado", "Materiales", "KG", 25200, 1190, 1.04),
+        ("2.3", "02. Obra Gruesa", "Enfierradura A630-420H", "KG", 24500, "2026-05-24", "Enfierrador especialista", "Mano de Obra", "DÍA", 140, 48000, 1.07),
+        ("2.4", "02. Obra Gruesa", "Moldajes de muros y losas", "M2", 1280, "2026-06-05", "Arriendo moldaje metálico", "Maquinaria / Equipos", "M2", 1280, 9800, 1.05),
+        ("2.4", "02. Obra Gruesa", "Moldajes de muros y losas", "M2", 1280, "2026-06-18", "Carpintero obra gruesa", "Mano de Obra", "DÍA", 155, 49000, 1.10),
+        ("2.5", "02. Obra Gruesa", "Albañilería confinada ladrillo titan", "M2", 520, "2026-06-28", "Ladrillo fiscal / titan reforzado", "Materiales", "UN", 18200, 560, 1.01),
+        ("2.5", "02. Obra Gruesa", "Albañilería confinada ladrillo titan", "M2", 520, "2026-07-05", "Albañil + ayudante", "Mano de Obra", "DÍA", 95, 45000, 0.98),
+        ("3.1", "03. Terminaciones", "Cubierta metálica ZincAlum + aislación", "M2", 640, "2026-07-18", "Panel ZincAlum PV6 0.5mm", "Materiales", "M2", 672, 16900, 1.00),
+        ("3.1", "03. Terminaciones", "Cubierta metálica ZincAlum + aislación", "M2", 640, "2026-07-26", "Subcontrato hojalatería y cubierta", "Subcontratos", "M2", 640, 12500, 1.04),
+        ("3.2", "03. Terminaciones", "Revestimiento EIFS y pintura exterior", "M2", 980, "2026-08-10", "Sistema EIFS + malla + pasta", "Materiales", "M2", 1020, 19500, 0.97),
+        ("3.2", "03. Terminaciones", "Revestimiento EIFS y pintura exterior", "M2", 980, "2026-08-22", "Pintor fachada y terminaciones", "Mano de Obra", "DÍA", 88, 43000, 0.94),
+        ("3.3", "03. Terminaciones", "Porcelanato y cerámica áreas húmedas", "M2", 710, "2026-09-04", "Porcelanato 60x60 alto tráfico", "Materiales", "M2", 760, 21400, 1.06),
+        ("3.3", "03. Terminaciones", "Porcelanato y cerámica áreas húmedas", "M2", 710, "2026-09-14", "Ceramista especialista", "Mano de Obra", "DÍA", 75, 48000, 1.02),
+        ("3.4", "03. Terminaciones", "Ventanas termopanel aluminio", "M2", 145, "2026-09-24", "Suministro e inst. termopanel", "Subcontratos", "M2", 145, 132000, 0.95),
+        ("4.1", "04. Instalaciones", "Red eléctrica, tableros y luminarias LED", "GL", 1, "2026-10-08", "Subcontrato eléctrico SEC", "Subcontratos", "GL", 1, 18500000, 0.92),
+        ("4.2", "04. Instalaciones", "Instalación sanitaria agua potable y alcant.", "GL", 1, "2026-10-18", "Cañerías PPR/PVC y artefactos", "Materiales", "GL", 1, 9800000, 0.96),
+        ("4.2", "04. Instalaciones", "Instalación sanitaria agua potable y alcant.", "GL", 1, "2026-10-25", "Gásfiter autorizado", "Mano de Obra", "DÍA", 65, 46000, 0.90),
+    ]
+
+    registros = []
+    for cod, cap, part, u_part, c_part, f_str, rec, tipo, u_rec, c_rec, pu, f_real in partidas_demo:
+        total = float(c_rec) * float(pu)
+        # Simular avance real hasta septiembre/principios de octubre
+        fecha_dt = pd.to_datetime(f_str)
+        costo_real = total * f_real if fecha_dt <= pd.Timestamp("2026-09-30") else 0.0
+        registros.append(
             {
-                "Fila Excel": num_fila,
-                "Ítem": item_str,
-                "Descripción": desc_str,
-                "Unidad": unit_str,
-                "Unidad_Estandar": unit_estandar,
-                "Cantidad": cant_val if cant_val is not None else 0.0,
-                "Precio Unitario": pu_val if pu_val is not None else 0.0,
-                "Total": tot_val if tot_val is not None else 0.0,
-                "Tiene_Valor": tiene_valores,
-                "Tiene_Cantidad_o_PU": (cant_val is not None) or (pu_val is not None) or bool(unit_str),
-                "Profundidad": profundidad,
-                "Capítulo": capitulo_actual,
-                "Partida Principal": subcapitulo_actual,
-                "Tipo": tipo_fila,
-                "Es_m2": es_metro_cuadrado(unit_str),
+                "Código": cod,
+                "Partida": part,
+                "Capítulo": cap,
+                "Unidad_Partida": u_part,
+                "Cantidad_Partida": float(c_part),
+                "Código_Recurso": cod,
+                "Recurso": rec,
+                "Tipo_Recurso": tipo,
+                "Unidad": u_rec,
+                "Cantidad": float(c_rec),
+                "Precio_Unitario": float(pu),
+                "Total": total,
+                "Fecha": fecha_dt,
+                "Costo_Real": costo_real,
             }
         )
+    return pd.DataFrame(registros)
 
-    df_jerarquia = pd.DataFrame(registros_raw)
-    df_resumen_pie = pd.DataFrame(resumen_pie)
 
-    if df_jerarquia.empty:
-        return df_jerarquia.copy(), df_jerarquia, df_resumen_pie
+# ---------------------------------------------------------------------------
+# Construcción de serie temporal para Curva S
+# ---------------------------------------------------------------------------
+def construir_serie_curva_s(
+    df: pd.DataFrame,
+    periodicidad: str,
+    fecha_inicio_sim: dt.date,
+    fecha_fin_sim: dt.date,
+    modelo_sim: str,
+) -> tuple[pd.DataFrame, bool, bool]:
+    """
+    Construye la serie temporal de inversión parcial y acumulada (PV y EV si existe).
+    Retorna: (df_curva, es_simulada, tiene_real).
+    """
+    datos = df.copy()
+    tiene_real = "Costo_Real" in datos.columns and datos["Costo_Real"].notna().any() and (datos["Costo_Real"].fillna(0).sum() > 0)
 
-    # Detección adicional de subtotales duplicados en filas padre:
-    # Si una fila tiene código padre (ej. '1' o '1.1'), sin unidad/cantidad/PU, pero sí un Total,
-    # y existen filas hijas con prefijo '1.' o '1.1.', se marca como Subtotal Padre para no duplicar costos.
-    codigos_existentes = [c for c in df_jerarquia["Ítem"].tolist() if c]
-    es_subtotal_padre: list[bool] = []
-    for _, row in df_jerarquia.iterrows():
-        codigo = row["Ítem"]
-        if (
-            codigo
-            and not row["Tiene_Cantidad_o_PU"]
-            and row["Total"] > 0
-            and any(c != codigo and c.startswith(f"{codigo}.") for c in codigos_existentes)
-        ):
-            es_subtotal_padre.append(True)
+    # Caso 1: Columnas matriciales de periodo tipo texto ('Mes 1', 'Ene-26', etc.)
+    if datos["Fecha"].notna().any() and datos["Fecha"].dtype == object:
+        # Intentar parsear como fecha real; si no, preservar orden de aparición de periodo
+        fechas_parseadas = pd.to_datetime(datos["Fecha"], errors="coerce")
+        if fechas_parseadas.notna().sum() >= len(datos) * 0.6:
+            datos["Fecha_Dt"] = fechas_parseadas
+            es_simulada = False
         else:
-            es_subtotal_padre.append(False)
+            agg_cols = {"Total": "sum"}
+            if tiene_real:
+                agg_cols["Costo_Real"] = "sum"
+            res = datos.groupby("Fecha", sort=False, as_index=False).agg(agg_cols)
+            res = res.rename(columns={"Fecha": "Periodo", "Total": "PV_Parcial"})
+            res["PV_Acum"] = res["PV_Parcial"].cumsum()
+            tot_pv = res["PV_Parcial"].sum()
+            res["PV_Pct"] = (res["PV_Acum"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+            if tiene_real:
+                res["EV_Parcial"] = res["Costo_Real"]
+                res["EV_Acum"] = res["EV_Parcial"].cumsum()
+                res["EV_Pct"] = (res["EV_Acum"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+            return res, False, tiene_real
+    elif datos["Fecha"].notna().any():
+        datos["Fecha_Dt"] = pd.to_datetime(datos["Fecha"], errors="coerce")
+        es_simulada = False
+    else:
+        es_simulada = True
+        datos["Fecha_Dt"] = pd.NaT
 
-    df_jerarquia["Es_Subtotal_Padre"] = es_subtotal_padre
-    df_jerarquia.loc[df_jerarquia["Es_Subtotal_Padre"], "Tipo"] = "Subtotal Capítulo/Partida"
+    # Si no hay fechas válidas en el archivo, asignar fechas simuladas según modelo PMO
+    if datos["Fecha_Dt"].isna().all():
+        es_simulada = True
+        inicio_ts = pd.Timestamp(fecha_inicio_sim)
+        fin_ts = pd.Timestamp(max(fecha_fin_sim, fecha_inicio_sim + dt.timedelta(days=14)))
+        total_dias = max(1, (fin_ts - inicio_ts).days)
 
-    df_partidas = df_jerarquia[
-        (df_jerarquia["Tipo"] == "Partida / Recurso") & (~df_jerarquia["Es_Subtotal_Padre"])
-    ].copy()
+        freq = "MS" if periodicidad == "Mensual" else "W-MON"
+        periodos_idx = pd.date_range(start=inicio_ts, end=fin_ts, freq=freq)
+        if len(periodos_idx) < 2:
+            periodos_idx = pd.date_range(start=inicio_ts, periods=6, freq=freq)
 
-    # Etiqueta única para gráficos ([Ítem] Descripción) evitando colisiones por nombres repetidos
-    df_partidas["Etiqueta"] = df_partidas.apply(
-        lambda r: f"{r['Ítem']} · {r['Descripción']}" if r["Ítem"] else r["Descripción"],
-        axis=1,
-    )
+        n_per = len(periodos_idx)
+        # Pesos según modelo elegido
+        t_norm = np.linspace(0.05, 0.95, n_per)
+        if modelo_sim == "Curva S Logística (PMO típica)":
+            # Derivada de sigmoide (campana suave)
+            pesos_base = np.exp(-((t_norm - 0.5) ** 2) / (2 * 0.21**2))
+            pesos_base = pesos_base / pesos_base.sum()
+            pv_parcial = datos["Total"].sum() * pesos_base
+            res = pd.DataFrame(
+                {
+                    "Periodo_Dt": periodos_idx,
+                    "Periodo": [
+                        p.strftime("%b %Y") if periodicidad == "Mensual" else p.strftime("%d-%b-%y")
+                        for p in periodos_idx
+                    ],
+                    "PV_Parcial": pv_parcial,
+                }
+            )
+            res["PV_Acum"] = res["PV_Parcial"].cumsum()
+            tot = res["PV_Parcial"].sum()
+            res["PV_Pct"] = (res["PV_Acum"] / tot * 100.0) if tot > 0 else 0.0
+            return res, True, False
+        elif modelo_sim == "Secuencial por Capítulos (WBS)":
+            caps = list(dict.fromkeys(datos["Capítulo"].tolist()))
+            mapa_cap_idx = {c: i for i, c in enumerate(caps)}
+            n_caps = max(1, len(caps))
+            fechas_asignadas = []
+            for _, row in datos.iterrows():
+                c_idx = mapa_cap_idx[row["Capítulo"]]
+                frac = (c_idx + 0.5) / n_caps
+                fecha_row = inicio_ts + pd.Timedelta(days=int(frac * total_dias))
+                fechas_asignadas.append(fecha_row)
+            datos["Fecha_Dt"] = fechas_asignadas
+        else:
+            # Uniforme en el rango de fechas
+            fechas_asignadas = [
+                inicio_ts + pd.Timedelta(days=int(i / max(1, len(datos) - 1) * total_dias))
+                for i in range(len(datos))
+            ]
+            datos["Fecha_Dt"] = fechas_asignadas
 
-    return df_partidas.reset_index(drop=True), df_jerarquia.reset_index(drop=True), df_resumen_pie
+    datos = datos[datos["Fecha_Dt"].notna()].copy()
+    if datos.empty:
+        return pd.DataFrame(), es_simulada, tiene_real
+
+    code_freq = "M" if periodicidad == "Mensual" else "W-MON"
+    datos["Periodo_Dt"] = datos["Fecha_Dt"].dt.to_period(code_freq).dt.start_time
+
+    agg_dict: dict[str, str] = {"Total": "sum"}
+    if tiene_real:
+        datos["Costo_Real_Clean"] = datos["Costo_Real"].fillna(0.0)
+        agg_dict["Costo_Real_Clean"] = "sum"
+
+    res = datos.groupby("Periodo_Dt", as_index=False).agg(agg_dict).sort_values("Periodo_Dt")
+    res = res.rename(columns={"Total": "PV_Parcial"})
+    res["Periodo"] = res["Periodo_Dt"].dt.strftime("%b %Y" if periodicidad == "Mensual" else "%d-%b-%y")
+    res["PV_Acum"] = res["PV_Parcial"].cumsum()
+    tot_pv = res["PV_Parcial"].sum()
+    res["PV_Pct"] = (res["PV_Acum"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+
+    if tiene_real:
+        res["EV_Parcial"] = res["Costo_Real_Clean"]
+        res["EV_Acum"] = res["EV_Parcial"].cumsum()
+        res["EV_Pct"] = (res["EV_Acum"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+
+    return res.reset_index(drop=True), es_simulada, tiene_real
 
 
 # ---------------------------------------------------------------------------
-# Gráficos profesionales con Matplotlib
+# Gráficos interactivos con Plotly (Identidad PRISMA)
 # ---------------------------------------------------------------------------
-def configurar_estilo_matplotlib() -> None:
-    """Aplica estilo limpio y legible para todos los gráficos Matplotlib."""
-    plt.rcParams.update(
-        {
-            "font.sans-serif": ["DejaVu Sans", "Segoe UI", "Arial"],
-            "axes.edgecolor": "#CBD5E1",
-            "axes.linewidth": 0.8,
-            "axes.titlesize": 12,
-            "axes.titleweight": "bold",
-            "axes.labelsize": 10,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-        }
+def grafico_dona_tipo_recurso(df: pd.DataFrame) -> go.Figure:
+    """Gráfico de Dona: Distribución porcentual del costo por Tipo de Recurso."""
+    agrupado = df.groupby("Tipo_Recurso", as_index=False)["Total"].sum().sort_values("Total", ascending=False)
+    fig = px.pie(
+        agrupado,
+        names="Tipo_Recurso",
+        values="Total",
+        hole=0.55,
+        color_discrete_sequence=PRISMA_PALETTE,
     )
+    fig.update_traces(
+        textposition="outside",
+        textinfo="percent+label",
+        hovertemplate="<b>%{label}</b><br>Costo: $ %{value:,.0f}<br>Participación: %{percent}<extra></extra>",
+        marker=dict(line=dict(color="#FFFFFF", width=2)),
+    )
+    fig.update_layout(
+        title=dict(text="Distribución de Costo por Tipo de Recurso", font=dict(color=PRISMA_NAVY, size=15)),
+        margin=dict(t=50, b=20, l=20, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
 
 
-def grafico_distribucion_capitulos(df: pd.DataFrame, agrupar_por: str = "Capítulo") -> plt.Figure:
-    """
-    Gráfico 1: Barras horizontales ordenadas de mayor a menor con monto total ($)
-    y porcentaje de incidencia por Capítulo o Partida Principal.
-    """
-    configurar_estilo_matplotlib()
+def grafico_top15_recursos(df: pd.DataFrame) -> go.Figure:
+    """Gráfico de Barras Horizontales: Top 15 insumos más costosos del proyecto."""
     agrupado = (
-        df.groupby(agrupar_por, as_index=False)["Total"]
+        df.groupby(["Recurso", "Tipo_Recurso"], as_index=False)["Total"]
+        .sum()
+        .sort_values("Total", ascending=False)
+        .head(15)
+        .sort_values("Total", ascending=True)
+    )
+    total_proyecto = df["Total"].sum()
+    agrupado["Incidencia"] = (agrupado["Total"] / total_proyecto * 100.0) if total_proyecto > 0 else 0.0
+    agrupado["Etiqueta"] = agrupado["Recurso"].map(lambda s: acortar_etiqueta(s, 36))
+
+    fig = px.bar(
+        agrupado,
+        x="Total",
+        y="Etiqueta",
+        color="Tipo_Recurso",
+        orientation="h",
+        color_discrete_sequence=PRISMA_PALETTE,
+        custom_data=["Recurso", "Tipo_Recurso", "Incidencia"],
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Tipo: %{customdata[1]}<br>"
+            "Costo: $ %{x:,.0f}<br>"
+            "Incidencia: %{customdata[2]:.2f}%<extra></extra>"
+        )
+    )
+    fig.update_layout(
+        title=dict(text="Top 15 Recursos / Insumos de Mayor Costo", font=dict(color=PRISMA_NAVY, size=15)),
+        xaxis_title="Costo Total ($)",
+        yaxis_title="",
+        margin=dict(t=50, b=30, l=10, r=20),
+        legend=dict(title="", orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF",
+    )
+    fig.update_xaxes(gridcolor="#E2E8F0", tickformat="$,.0f")
+    return fig
+
+
+def grafico_pareto_recursos(df: pd.DataFrame, max_items: int = 20) -> go.Figure:
+    """Diagrama de Pareto (80/20): Barras de costo por recurso + línea de porcentaje acumulado."""
+    agrupado = (
+        df[df["Total"] > 0]
+        .groupby("Recurso", as_index=False)["Total"]
         .sum()
         .sort_values("Total", ascending=False)
     )
-    total_general = agrupado["Total"].sum()
-    agrupado["Pct"] = (agrupado["Total"] / total_general * 100.0) if total_general > 0 else 0.0
+    total_global = agrupado["Total"].sum()
+    top = agrupado.head(max_items).copy()
+    top["Pct"] = (top["Total"] / total_global * 100.0) if total_global > 0 else 0.0
+    top["Pct_Acum"] = top["Pct"].cumsum()
+    top["Etiqueta"] = top["Recurso"].map(lambda s: acortar_etiqueta(s, 26))
 
-    # Si hay muchas subcategorías, limitar visualmente a Top 20 para legibilidad
-    if len(agrupado) > 20:
-        agrupado = agrupado.head(20)
-
-    etiquetas = [acortar_etiqueta(x, 42) for x in agrupado[agrupar_por]]
-    montos = agrupado["Total"].values
-    pcts = agrupado["Pct"].values
-
-    alto = max(4.2, 0.42 * len(agrupado) + 1.4)
-    fig, ax = plt.subplots(figsize=(10.5, alto), dpi=130)
-
-    colores = plt.cm.Blues([0.45 + 0.45 * (1 - i / max(1, len(agrupado))) for i in range(len(agrupado))])
-    y_pos = range(len(agrupado))
-    barras = ax.barh(y_pos, montos, color=colores, edgecolor="#1E3A8A", linewidth=0.5, height=0.68)
-
-    ax.set_yticks(list(y_pos))
-    ax.set_yticklabels(etiquetas)
-    ax.invert_yaxis()  # Mayor incidencia arriba
-
-    max_monto = max(montos) if len(montos) > 0 else 1.0
-    ax.set_xlim(0, max_monto * 1.28)
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: formato_moneda(x, 0)))
-    ax.grid(axis="x", linestyle="--", alpha=0.45, color="#94A3B8")
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    ax.set_title(f"Distribución del Presupuesto por {agrupar_por}", pad=12, loc="left", color="#0F172A")
-    ax.set_xlabel("Costo Total ($)")
-
-    for barra, monto, pct in zip(barras, montos, pcts):
-        ax.text(
-            barra.get_width() + max_monto * 0.015,
-            barra.get_y() + barra.get_height() / 2,
-            f"{formato_moneda(monto, 0)}  ({pct:.1f}%)",
-            va="center",
-            ha="left",
-            fontsize=8.5,
-            color="#1E293B",
-            fontweight="medium",
-        )
-
-    fig.tight_layout()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Bar(
+            x=top["Etiqueta"],
+            y=top["Total"],
+            name="Costo Recurso ($)",
+            marker_color=PRISMA_NAVY,
+            customdata=np.stack([top["Recurso"], top["Pct"]], axis=-1),
+            hovertemplate="<b>%{customdata[0]}</b><br>Costo: $ %{y:,.0f}<br>Incidencia: %{customdata[1]:.2f}%<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=top["Etiqueta"],
+            y=top["Pct_Acum"],
+            name="% Acumulado",
+            mode="lines+markers",
+            line=dict(color=PRISMA_GOLD, width=3),
+            marker=dict(size=7, color=PRISMA_GOLD, line=dict(width=1.5, color="#FFFFFF")),
+            hovertemplate="<b>%{x}</b><br>Acumulado: %{y:.1f}%<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig.add_hline(
+        y=80,
+        line_dash="dot",
+        line_color="#DC2626",
+        annotation_text="Umbral Pareto 80%",
+        annotation_position="top left",
+        secondary_y=True,
+    )
+    fig.update_layout(
+        title=dict(
+            text=f"Diagrama de Pareto 80/20 — Top {len(top)} Recursos Críticos",
+            font=dict(color=PRISMA_NAVY, size=15),
+        ),
+        hovermode="x unified",
+        margin=dict(t=55, b=85, l=20, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF",
+    )
+    fig.update_xaxes(tickangle=-35, tickfont=dict(size=10))
+    fig.update_yaxes(title_text="Costo ($)", tickformat="$,.0f", gridcolor="#E2E8F0", secondary_y=False)
+    fig.update_yaxes(title_text="% Acumulado", range=[0, 108], ticksuffix="%", showgrid=False, secondary_y=True)
     return fig
 
 
-def grafico_metros_cuadrados(df_m2: pd.DataFrame, max_barras: int = 18) -> plt.Figure:
-    """
-    Gráfico 2: Barras verticales dedicadas exclusivamente a las partidas medidas en m²,
-    mostrando la cantidad de m² con etiquetas de valor sobre cada barra.
-    """
-    configurar_estilo_matplotlib()
-    datos = df_m2[df_m2["Cantidad"] > 0].sort_values("Cantidad", ascending=False).head(max_barras)
-
-    etiquetas = [acortar_etiqueta(x, 28) for x in datos["Etiqueta"]]
-    cantidades = datos["Cantidad"].values
-
-    ancho = max(10.0, 0.58 * len(datos) + 2.0)
-    fig, ax = plt.subplots(figsize=(min(ancho, 15.0), 5.6), dpi=130)
-
-    x_pos = range(len(datos))
-    barras = ax.bar(x_pos, cantidades, color="#0D9488", edgecolor="#115E59", linewidth=0.6, width=0.65)
-
-    ax.set_xticks(list(x_pos))
-    ax.set_xticklabels(etiquetas, rotation=38, ha="right", fontsize=8.5)
-    max_q = max(cantidades) if len(cantidades) > 0 else 1.0
-    ax.set_ylim(0, max_q * 1.18)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f"{formato_numero(y, 0)} m²"))
-    ax.grid(axis="y", linestyle="--", alpha=0.45, color="#94A3B8")
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    ax.set_title(
-        f"Metros Cuadrados (m²) por Partida de Obra (Top {len(datos)} actividades)",
-        pad=12,
-        loc="left",
-        color="#0F172A",
+def grafico_treemap_jerarquico(df: pd.DataFrame) -> go.Figure:
+    """Treemap jerárquico: Capítulo -> Tipo de Recurso -> Recurso."""
+    datos = df[df["Total"] > 0].copy()
+    datos["Capítulo_C"] = datos["Capítulo"].map(lambda s: acortar_etiqueta(s, 32))
+    datos["Recurso_C"] = datos["Recurso"].map(lambda s: acortar_etiqueta(s, 36))
+    agrupado = (
+        datos.groupby(["Capítulo_C", "Tipo_Recurso", "Recurso_C"], as_index=False)["Total"].sum()
     )
-    ax.set_ylabel("Superficie (m²)")
 
-    for barra, cant in zip(barras, cantidades):
-        dec = 0 if cant >= 100 else 1
-        ax.text(
-            barra.get_x() + barra.get_width() / 2,
-            barra.get_height() + max_q * 0.018,
-            f"{formato_numero(cant, dec)} m²",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            rotation=0 if len(datos) <= 12 else 30,
-            color="#0F172A",
-            fontweight="bold",
-        )
-
-    fig.tight_layout()
+    fig = px.treemap(
+        agrupado,
+        path=[px.Constant("Presupuesto Directo"), "Capítulo_C", "Tipo_Recurso", "Recurso_C"],
+        values="Total",
+        color="Tipo_Recurso",
+        color_discrete_sequence=PRISMA_PALETTE,
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{label}</b><br>Costo: $ %{value:,.0f}<br>% del Padre: %{percentParent:.1%}<br>% del Total: %{percentRoot:.1%}<extra></extra>",
+        textinfo="label+percent parent",
+    )
+    fig.update_layout(
+        title=dict(text="Mapa de Árbol (Treemap): Capítulo → Tipo de Recurso → Recurso", font=dict(color=PRISMA_NAVY, size=15)),
+        margin=dict(t=50, b=15, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
     return fig
 
 
-def grafico_pareto_top10(df: pd.DataFrame) -> plt.Figure:
-    """
-    Gráfico 3: Top 10 recursos / partidas de mayor incidencia en costo y curva
-    de porcentaje acumulado sobre el presupuesto filtrado.
-    """
-    configurar_estilo_matplotlib()
-    datos_validos = df[df["Total"] > 0].sort_values("Total", ascending=False)
-    total_presupuesto = datos_validos["Total"].sum()
-    top10 = datos_validos.head(10).copy()
+def grafico_curva_s(df_curva: pd.DataFrame, vista_porcentual: bool, tiene_real: bool) -> go.Figure:
+    """Gráfico Combinado Curva S: Barras parciales + Curva Acumulada Planificada (PV) y Real (EV)."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    tot_pv = df_curva["PV_Parcial"].sum()
 
-    top10["Pct_Individual"] = (
-        (top10["Total"] / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
+    if vista_porcentual:
+        y_bar_pv = (df_curva["PV_Parcial"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+        y_line_pv = df_curva["PV_Pct"]
+        titulo_y1 = "Inversión Parcial (%)"
+        titulo_y2 = "Avance Acumulado (%)"
+        fmt_y1 = ".1f"
+        suf_y1 = "%"
+        hover_bar = "<b>%{x}</b><br>Planificado Parcial: %{y:.2f}%<extra></extra>"
+        hover_pv = "<b>%{x}</b><br>Curva S Planificada (PV): %{y:.2f}%<extra></extra>"
+    else:
+        y_bar_pv = df_curva["PV_Parcial"]
+        y_line_pv = df_curva["PV_Acum"]
+        titulo_y1 = "Inversión Parcial ($)"
+        titulo_y2 = "Costo Acumulado ($)"
+        fmt_y1 = "$,.0f"
+        suf_y1 = ""
+        hover_bar = "<b>%{x}</b><br>Planificado Parcial: $ %{y:,.0f}<extra></extra>"
+        hover_pv = "<b>%{x}</b><br>Curva S Planificada (PV): $ %{y:,.0f}<extra></extra>"
+
+    fig.add_trace(
+        go.Bar(
+            x=df_curva["Periodo"],
+            y=y_bar_pv,
+            name="Parcial Planificado (PV)",
+            marker_color="rgba(21, 51, 82, 0.35)",
+            marker_line_color=PRISMA_NAVY,
+            marker_line_width=1,
+            hovertemplate=hover_bar,
+        ),
+        secondary_y=False,
     )
-    top10["Pct_Acumulado"] = top10["Pct_Individual"].cumsum()
-
-    etiquetas = [acortar_etiqueta(x, 30) for x in top10["Etiqueta"]]
-    montos = top10["Total"].values
-    acumulado = top10["Pct_Acumulado"].values
-
-    fig, ax1 = plt.subplots(figsize=(11.5, 5.6), dpi=130)
-    x_pos = list(range(len(top10)))
-
-    barras = ax1.bar(
-        x_pos,
-        montos,
-        color="#2563EB",
-        alpha=0.88,
-        edgecolor="#1E3A8A",
-        linewidth=0.6,
-        width=0.62,
-        label="Costo Partida ($)",
+    fig.add_trace(
+        go.Scatter(
+            x=df_curva["Periodo"],
+            y=y_line_pv,
+            name="Curva S Planificada (PV)",
+            mode="lines+markers",
+            line=dict(color=PRISMA_NAVY, width=3.2),
+            marker=dict(size=7, color=PRISMA_NAVY),
+            hovertemplate=hover_pv,
+        ),
+        secondary_y=True,
     )
-    ax1.set_xticks(x_pos)
-    ax1.set_xticklabels(etiquetas, rotation=32, ha="right", fontsize=8.5)
-    max_m = max(montos) if len(montos) > 0 else 1.0
-    ax1.set_ylim(0, max_m * 1.2)
-    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: formato_moneda(y, 0)))
-    ax1.set_ylabel("Monto ($)", color="#1E3A8A", fontweight="bold")
-    ax1.grid(axis="y", linestyle="--", alpha=0.4, color="#94A3B8")
-    ax1.set_axisbelow(True)
-    ax1.spines["top"].set_visible(False)
 
-    for barra, monto in zip(barras, montos):
-        ax1.text(
-            barra.get_x() + barra.get_width() / 2,
-            barra.get_height() + max_m * 0.015,
-            formato_moneda(monto, 0),
-            ha="center",
-            va="bottom",
-            fontsize=7.8,
-            color="#1E293B",
+    if tiene_real and "EV_Acum" in df_curva.columns:
+        if vista_porcentual:
+            y_bar_ev = (df_curva["EV_Parcial"] / tot_pv * 100.0) if tot_pv > 0 else 0.0
+            y_line_ev = df_curva["EV_Pct"]
+            hover_bar_ev = "<b>%{x}</b><br>Ejecutado Parcial: %{y:.2f}%<extra></extra>"
+            hover_ev = "<b>%{x}</b><br>Curva S Real (EV): %{y:.2f}%<extra></extra>"
+        else:
+            y_bar_ev = df_curva["EV_Parcial"]
+            y_line_ev = df_curva["EV_Acum"]
+            hover_bar_ev = "<b>%{x}</b><br>Ejecutado Parcial: $ %{y:,.0f}<extra></extra>"
+            hover_ev = "<b>%{x}</b><br>Curva S Real (EV): $ %{y:,.0f}<extra></extra>"
+
+        fig.add_trace(
+            go.Bar(
+                x=df_curva["Periodo"],
+                y=y_bar_ev,
+                name="Parcial Ejecutado (EV)",
+                marker_color="rgba(200, 146, 54, 0.48)",
+                marker_line_color=PRISMA_GOLD,
+                marker_line_width=1,
+                hovertemplate=hover_bar_ev,
+            ),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df_curva["Periodo"],
+                y=y_line_ev,
+                name="Curva S Real (EV)",
+                mode="lines+markers",
+                line=dict(color=PRISMA_GOLD, width=3.2, dash="solid"),
+                marker=dict(size=7, symbol="diamond", color=PRISMA_GOLD),
+                hovertemplate=hover_ev,
+            ),
+            secondary_y=True,
         )
 
-    # Eje secundario para curva acumulada (%)
-    ax2 = ax1.twinx()
-    ax2.plot(
-        x_pos,
-        acumulado,
-        color="#DC2626",
-        marker="o",
-        linewidth=2.2,
-        markersize=6,
-        label="% Acumulado del Presupuesto",
+    fig.update_layout(
+        title=dict(
+            text="Curva S de Control Físico / Financiero (Parcial vs. Acumulado)",
+            font=dict(color=PRISMA_NAVY, size=15),
+        ),
+        barmode="group",
+        hovermode="x unified",
+        margin=dict(t=60, b=45, l=20, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF",
     )
-    ax2.axhline(80, color="#F59E0B", linestyle=":", linewidth=1.3, label="Referencia 80%")
-    ax2.set_ylim(0, 108)
-    ax2.set_ylabel("Incidencia Acumulada (%)", color="#B91C1C", fontweight="bold")
-    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f"{y:.0f}%"))
-    ax2.spines["top"].set_visible(False)
-
-    for x, y_pct in zip(x_pos, acumulado):
-        ax2.text(
-            x,
-            min(y_pct + 3.0, 103),
-            f"{y_pct:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color="#991B1B",
-            fontweight="bold",
-        )
-
-    ax1.set_title(
-        "Top 10 Partidas / Recursos de Mayor Incidencia (Análisis de Pareto)",
-        pad=14,
-        loc="left",
-        color="#0F172A",
+    fig.update_yaxes(
+        title_text=titulo_y1,
+        tickformat=fmt_y1,
+        ticksuffix=suf_y1,
+        gridcolor="#E2E8F0",
+        secondary_y=False,
     )
-
-    # Leyenda combinada de ambos ejes
-    h1, l1 = ax1.get_legend_handles_labels()
-    h2, l2 = ax2.get_legend_handles_labels()
-    ax1.legend(h1 + h2, l1 + l2, loc="upper left", frameon=True, facecolor="white", framealpha=0.9, fontsize=8.5)
-
-    fig.tight_layout()
+    fig.update_yaxes(
+        title_text=titulo_y2,
+        tickformat=".0f" if vista_porcentual else "$,.0f",
+        ticksuffix="%" if vista_porcentual else "",
+        range=[0, 108] if vista_porcentual else None,
+        showgrid=False,
+        secondary_y=True,
+    )
     return fig
 
 
 # ---------------------------------------------------------------------------
-# Exportación limpia a Excel y CSV
+# Exportación limpia a Excel con openpyxl
 # ---------------------------------------------------------------------------
-def exportar_excel_bytes(df: pd.DataFrame) -> bytes:
-    """Genera un archivo Excel (.xlsx) limpio en memoria para descarga."""
+def exportar_excel_estructurado(df_export: pd.DataFrame) -> bytes:
+    """Exporta la tabla filtrada y un resumen por capítulo y tipo de recurso a .xlsx."""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Presupuesto_Procesado")
+        df_export.to_excel(writer, index=False, sheet_name="Detalle_Recursos")
+
+        res_cap = (
+            df_export.groupby("Capítulo", as_index=False)["Total"]
+            .sum()
+            .sort_values("Total", ascending=False)
+        )
+        res_cap.to_excel(writer, index=False, sheet_name="Resumen_Capitulos")
+
+        res_tipo = (
+            df_export.groupby("Tipo_Recurso", as_index=False)["Total"]
+            .sum()
+            .sort_values("Total", ascending=False)
+        )
+        res_tipo.to_excel(writer, index=False, sheet_name="Resumen_Tipos")
+
+        # Ajuste básico de ancho de columnas
+        for ws in writer.sheets.values():
+            for col in ws.columns:
+                max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+                ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 48)
+
     buffer.seek(0)
     return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
-# Interfaz Principal (Streamlit)
+# Aplicación Principal (Streamlit)
 # ---------------------------------------------------------------------------
 def main() -> None:
-    st.title("🏗️ Analizador de Presupuestos de Obra (Anexo N° 4)")
-    st.caption(
-        "Carga un presupuesto en Excel (.xlsx), extrae partidas, costos y cubicaciones en m² "
-        "mediante `openpyxl (data_only=True)` y visualiza su incidencia con `matplotlib`."
-    )
+    aplicar_estilos_prisma()
 
     # -----------------------------------------------------------------------
-    # Barra Lateral: Carga de archivo y configuración de extracción
+    # Barra Lateral: Fuente de datos, mapeo dinámico, filtros y Curva S
     # -----------------------------------------------------------------------
     with st.sidebar:
+        if LOGO_PRISMA_PATH.exists():
+            st.image(str(LOGO_PRISMA_PATH), use_container_width=True)
+        else:
+            st.markdown(f"### 🏗️ PRISMA SpA Constructora")
+
         st.header("1. Origen de Datos")
-        archivo_subido = st.file_uploader(
-            "Sube el archivo Excel de presupuesto (.xlsx)",
-            type=["xlsx"],
-            help="Se lee con openpyxl(..., data_only=True) para extraer fórmulas ya evaluadas.",
+        modo_demo = st.checkbox(
+            "Cargar datos de ejemplo de construcción",
+            value=False,
+            help="Genera un proyecto realista de edificación en memoria con fechas, PV y EV.",
         )
 
-        usar_ejemplo_local = False
-        if archivo_subido is None and ARCHIVO_LOCAL_DEFECTO.exists():
-            usar_ejemplo_local = st.checkbox(
-                f"Cargar archivo de la carpeta ({ARCHIVO_LOCAL_DEFECTO.name})",
-                value=True,
+        archivo_subido = None
+        usar_local = False
+        if not modo_demo:
+            archivo_subido = st.file_uploader(
+                "Sube el archivo Excel (.xlsx / .xls)",
+                type=["xlsx", "xls"],
+                help="Compatible con presupuestos Anexo N° 4, Presto, Arquímedes, MS Project o plantillas propias.",
             )
+            if archivo_subido is None and ARCHIVO_LOCAL_DEFECTO.exists():
+                usar_local = st.checkbox(
+                    f"Usar archivo local ({ARCHIVO_LOCAL_DEFECTO.name})",
+                    value=True,
+                )
 
-        if archivo_subido is None and not usar_ejemplo_local:
-            st.info("Sube un archivo `.xlsx` para iniciar el análisis.")
+    df_datos = pd.DataFrame()
+    df_pie = pd.DataFrame()
+    metadatos: dict[str, str] = {}
+    info_extra: dict[str, Any] = {"formulas_vacias": 0, "expandido_apu": False}
+    nombre_fuente = "Proyecto Demo Edificación PRISMA"
+    modo_badge = "MODO DEMO PMO"
+
+    # Rama A: Generador de Datos Demo
+    if modo_demo:
+        df_datos = generar_datos_demo()
+        metadatos = {
+            "Proyecto": "Edificio Corporativo PRISMA (Datos Demo)",
+            "Ubicación": "Concepción, Región del Biobío",
+        }
+    else:
+        if archivo_subido is None and not usar_local:
+            render_banner_corporativo(
+                "Sube un archivo Excel en la barra lateral o activa el Modo Demo para iniciar.",
+                "ESPERANDO DATOS",
+            )
+            st.info(
+                "👈 Activa **'Cargar datos de ejemplo de construcción'** o sube tu archivo `.xlsx`/`.xls` en la barra lateral."
+            )
             st.stop()
 
         try:
             if archivo_subido is not None:
                 file_bytes = archivo_subido.getvalue()
-                nombre_archivo = archivo_subido.name
+                nombre_fuente = archivo_subido.name
             else:
                 file_bytes = ARCHIVO_LOCAL_DEFECTO.read_bytes()
-                nombre_archivo = ARCHIVO_LOCAL_DEFECTO.name
+                nombre_fuente = ARCHIVO_LOCAL_DEFECTO.name
         except Exception as exc:
             st.error(f"No se pudo leer el archivo seleccionado: {exc}")
             st.stop()
 
-        # Lectura de hojas del libro
+        # Lectura en una sola pasada
         try:
-            with st.spinner("Leyendo estructura del libro Excel..."):
-                sheetnames = obtener_nombres_hojas(file_bytes)
+            with st.spinner("Procesando libro Excel con openpyxl..."):
+                paquete = cargar_libro_y_hoja_unica(file_bytes, nombre_fuente, hoja_objetivo=None)
         except Exception as exc:
-            st.error(f"Error al abrir el archivo Excel con openpyxl: {exc}")
+            st.error(f"Error al abrir el libro Excel: {exc}")
             st.stop()
 
-        if not sheetnames:
-            st.error("El archivo Excel no contiene hojas visibles.")
-            st.stop()
-
-        idx_defecto = seleccionar_hoja_por_defecto(sheetnames)
-        hoja_seleccionada = st.selectbox(
-            "Hoja de cálculo a analizar",
-            options=sheetnames,
-            index=idx_defecto,
-        )
-
-        # Lectura de filas de la hoja
-        try:
-            with st.spinner(f"Extrayendo datos evaluados de '{hoja_seleccionada}'..."):
-                filas_crudas = leer_hoja_cruda(file_bytes, hoja_seleccionada)
-        except Exception as exc:
-            st.error(f"No se pudo leer la hoja '{hoja_seleccionada}': {exc}")
-            st.stop()
-
-        if not filas_crudas:
-            st.warning("La hoja seleccionada está vacía.")
-            st.stop()
-
-        # Detección automática o manual de fila de encabezados
-        st.header("2. Encabezados y Columnas")
-        fila_auto = detectar_fila_encabezado(filas_crudas)
-        deteccion_auto = st.checkbox("Detectar fila de encabezados automáticamente", value=True)
-        if deteccion_auto:
-            fila_encabezado = fila_auto
-            st.caption(f"Encabezado detectado en la **fila {fila_encabezado}**.")
-        else:
-            fila_encabezado = int(
-                st.number_input(
-                    "Número de fila de encabezado (1-based)",
-                    min_value=1,
-                    max_value=max(1, len(filas_crudas)),
-                    value=fila_auto,
-                    step=1,
-                )
+        sheetnames: list[str] = paquete["sheetnames"]
+        with st.sidebar:
+            hoja_defecto = paquete["hoja"]
+            hoja_sel = st.selectbox(
+                "Hoja de cálculo",
+                options=sheetnames,
+                index=sheetnames.index(hoja_defecto),
             )
 
-        if fila_encabezado > len(filas_crudas):
-            st.error("La fila de encabezado indicada excede la cantidad de filas de la hoja.")
+        # Si el usuario eligió una hoja distinta a la por defecto, recargar solo esa hoja cacheada
+        if hoja_sel != paquete["hoja"]:
+            try:
+                with st.spinner(f"Cargando hoja '{hoja_sel}'..."):
+                    paquete = cargar_libro_y_hoja_unica(file_bytes, nombre_fuente, hoja_objetivo=hoja_sel)
+            except Exception as exc:
+                st.error(f"No se pudo leer la hoja '{hoja_sel}': {exc}")
+                st.stop()
+
+        filas_crudas = paquete["filas"]
+        if not filas_crudas:
+            st.warning("La hoja seleccionada no contiene datos.")
             st.stop()
 
-        fila_hdr_tuple = filas_crudas[fila_encabezado - 1]
-        max_cols = max(len(fila_hdr_tuple), max((len(r) for r in filas_crudas[:50]), default=0))
-        etiquetas_cols, mapa_col_idx = construir_opciones_columnas(fila_hdr_tuple, max_cols)
-        sugerencias = sugerir_mapeo_columnas(etiquetas_cols)
+        with st.sidebar:
+            st.header("2. Mapeo Inteligente")
+            fila_auto = detectar_fila_encabezado(filas_crudas)
+            auto_hdr = st.checkbox("Detectar fila de encabezados automáticamente", value=True)
+            fila_hdr = (
+                fila_auto
+                if auto_hdr
+                else int(
+                    st.number_input(
+                        "Fila de encabezados (1-based)",
+                        min_value=1,
+                        max_value=max(1, len(filas_crudas)),
+                        value=fila_auto,
+                    )
+                )
+            )
+            if auto_hdr:
+                st.caption(f"Encabezados detectados en **fila {fila_hdr}**.")
 
-        opciones_con_ninguna = ["(Ninguna)"] + etiquetas_cols
+            fila_hdr_tuple = filas_crudas[fila_hdr - 1]
+            max_cols = max(len(fila_hdr_tuple), max((len(r) for r in filas_crudas[:50]), default=0))
+            etiquetas_cols, mapa_col_idx = construir_opciones_columnas(fila_hdr_tuple, max_cols)
+            sugerencias = sugerir_mapeo_columnas(etiquetas_cols)
 
-        def select_col(etiqueta_ui: str, rol: str) -> int | None:
-            sugerida = sugerencias.get(rol)
-            idx_sug = opciones_con_ninguna.index(sugerida) if sugerida in opciones_con_ninguna else 0
-            elegida = st.selectbox(etiqueta_ui, options=opciones_con_ninguna, index=idx_sug, key=f"map_{rol}_{hoja_seleccionada}")
-            return None if elegida == "(Ninguna)" else mapa_col_idx[elegida]
+            expandir_apu = False
+            if paquete["tiene_estructura_apu"]:
+                expandir_apu = st.checkbox(
+                    f"Extraer recursos desde hojas APU ({len(paquete['apu_sheets'])} hojas)",
+                    value=True,
+                    help="Desglosa Materiales, Mano de Obra, Equipos y Subcontratos desde cada hoja APU.",
+                )
 
-        with st.expander("Mapeo flexible de columnas", expanded=False):
-            col_indices = {
-                "item": select_col("Columna de Ítem / Código", "item"),
-                "descripcion": select_col("Columna de Descripción / Recurso", "descripcion"),
-                "unidad": select_col("Columna de Unidad", "unidad"),
-                "cantidad": select_col("Columna de Cantidad", "cantidad"),
-                "precio_unitario": select_col("Columna de Precio Unitario", "precio_unitario"),
-                "total": select_col("Columna de Costo Total", "total"),
-            }
+            opciones_map = ["(Ninguna)"] + etiquetas_cols
 
-    # -----------------------------------------------------------------------
-    # Procesamiento y limpieza del presupuesto
-    # -----------------------------------------------------------------------
-    try:
-        df_partidas, df_jerarquia, df_resumen_pie = procesar_presupuesto(
-            filas_crudas, fila_encabezado, col_indices
+            def mapear_campo(label: str, rol: str) -> int | None:
+                sug = sugerencias.get(rol)
+                idx = opciones_map.index(sug) if sug in opciones_map else 0
+                sel = st.selectbox(label, options=opciones_map, index=idx, key=f"map_{rol}_{hoja_sel}")
+                return None if sel == "(Ninguna)" else mapa_col_idx[sel]
+
+            with st.expander("Mapeador dinámico de columnas", expanded=False):
+                col_indices = {
+                    "codigo": mapear_campo("Código / ID Partida", "codigo"),
+                    "partida": mapear_campo("Nombre Partida / Actividad", "partida"),
+                    "capitulo": mapear_campo("Capítulo / Especialidad / WBS", "capitulo"),
+                    "recurso": mapear_campo("Recurso / Insumo", "recurso"),
+                    "tipo_recurso": mapear_campo("Tipo de Recurso", "tipo_recurso"),
+                    "unidad": mapear_campo("Unidad de Medida", "unidad"),
+                    "cantidad": mapear_campo("Cantidad / Metrado", "cantidad"),
+                    "precio_unitario": mapear_campo("Precio Unitario (PU)", "precio_unitario"),
+                    "total": mapear_campo("Costo Total / Parcial", "total"),
+                    "fecha": mapear_campo("Fecha / Periodo (Opcional)", "fecha"),
+                    "costo_real": mapear_campo("Costo Real / EV (Opcional)", "costo_real"),
+                }
+
+        usadas_set = {v for v in sugerencias.values() if v is not None}
+        cols_matriciales = (
+            detectar_columnas_periodos_matriciales(etiquetas_cols, usadas_set)
+            if col_indices["fecha"] is None
+            else []
         )
-        metadatos = extraer_metadatos_proyecto(filas_crudas, fila_encabezado)
-    except Exception as exc:
-        st.error(f"Ocurrió un error al procesar la estructura del presupuesto: {exc}")
+
+        try:
+            df_datos, df_pie, info_extra = procesar_datos_excel(
+                filas=filas_crudas,
+                header_row_1based=fila_hdr,
+                col_indices=col_indices,
+                etiquetas_cols=etiquetas_cols,
+                mapa_col_idx=mapa_col_idx,
+                apu_sheets=paquete["apu_sheets"],
+                expandir_apu=expandir_apu,
+                cols_periodo_matricial=cols_matriciales,
+            )
+            metadatos = extraer_metadatos_proyecto(filas_crudas, fila_hdr)
+        except Exception as exc:
+            st.error(f"Error al estructurar el presupuesto: {exc}")
+            st.stop()
+
+        modo_badge = (
+            f"ANEXO N° 4 + APU ({info_extra['partidas_apu_vinculadas']} APU)"
+            if info_extra.get("expandido_apu")
+            else f"HOJA: {hoja_sel}"
+        )
+
+    if df_datos.empty:
+        st.warning("No se encontraron registros válidos. Ajusta la fila de encabezado o el mapeo de columnas.")
         st.stop()
 
-    if df_partidas.empty:
-        st.warning(
-            "No se detectaron partidas valorizadas con el mapeo actual. "
-            "Ajusta la fila de encabezado o el mapeo de columnas en la barra lateral."
-        )
-        st.stop()
-
     # -----------------------------------------------------------------------
-    # Filtros en barra lateral (Capítulo y Unidad de Medida)
+    # Filtros globales y parámetros temporales en sidebar
     # -----------------------------------------------------------------------
     with st.sidebar:
-        st.header("3. Filtros de Análisis")
-        capitulos_disponibles = list(dict.fromkeys(df_partidas["Capítulo"].tolist()))
-        capitulos_sel = st.multiselect(
-            "Filtrar por Capítulo / Partida",
-            options=capitulos_disponibles,
-            default=capitulos_disponibles,
-        )
+        st.header("3. Filtros Globales")
+        caps_disp = list(dict.fromkeys(df_datos["Capítulo"].tolist()))
+        caps_sel = st.multiselect("Capítulo / Especialidad", options=caps_disp, default=caps_disp)
 
-        unidades_disponibles = sorted(
-            {u for u in df_partidas["Unidad_Estandar"].tolist() if u},
-            key=lambda x: (0 if x == "M2" else 1, x),
-        )
-        incluir_sin_unidad = "" in df_partidas["Unidad_Estandar"].values
-        opciones_unidad = unidades_disponibles + (["(Sin unidad)"] if incluir_sin_unidad else [])
+        tipos_disp = sorted(df_datos["Tipo_Recurso"].unique().tolist())
+        tipos_sel = st.multiselect("Tipo de Recurso", options=tipos_disp, default=tipos_disp)
 
-        unidades_sel = st.multiselect(
-            "Filtrar por Unidad de Medida",
-            options=opciones_unidad,
-            default=opciones_unidad,
-            help="Las variantes de metros cuadrados (m2, m², M2) se agrupan bajo 'M2'.",
-        )
+        unidades_disp = sorted(df_datos["Unidad"].unique().tolist(), key=lambda x: (0 if x == "M2" else 1, x))
+        unidades_sel = st.multiselect("Unidad de Medida", options=unidades_disp, default=unidades_disp)
 
-        busqueda_texto = st.text_input(
-            "Buscar por código o descripción",
-            value="",
-            placeholder="Ej. hormigón, pintura, moldaje…",
-        ).strip()
+        buscador = st.text_input("Buscar partida o recurso", placeholder="Ej. Hormigón, Carpintero, M2…").strip()
 
-    # Aplicar filtros
-    unidad_filtrada = df_partidas["Unidad_Estandar"].replace("", "(Sin unidad)")
-    mask = df_partidas["Capítulo"].isin(capitulos_sel) & unidad_filtrada.isin(unidades_sel)
+        st.header("4. Parámetros Curva S")
+        tiene_fechas_reales = df_datos["Fecha"].notna().any()
+        if not tiene_fechas_reales:
+            st.caption("El Excel no incluye fechas. Define el horizonte del proyecto para proyectar la Curva S:")
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                fecha_ini_sim = st.date_input("Inicio", value=dt.date(2026, 3, 1))
+            with c_f2:
+                fecha_fin_sim = st.date_input("Término", value=dt.date(2026, 10, 31))
+            modelo_sim = st.selectbox(
+                "Distribución temporal",
+                options=[
+                    "Secuencial por Capítulos (WBS)",
+                    "Curva S Logística (PMO típica)",
+                    "Uniforme / Lineal",
+                ],
+            )
+        else:
+            fecha_ini_sim = dt.date(2026, 1, 1)
+            fecha_fin_sim = dt.date(2026, 12, 31)
+            modelo_sim = "Secuencial por Capítulos (WBS)"
 
-    if busqueda_texto:
-        patron = re.escape(normalizar_texto(busqueda_texto))
+    # Aplicar filtros globales
+    mask = (
+        df_datos["Capítulo"].isin(caps_sel)
+        & df_datos["Tipo_Recurso"].isin(tipos_sel)
+        & df_datos["Unidad"].isin(unidades_sel)
+    )
+    if buscador:
+        pat = re.escape(normalizar_texto(buscador))
         mask = mask & (
-            df_partidas["Descripción"].map(normalizar_texto).str.contains(patron, regex=True)
-            | df_partidas["Ítem"].map(normalizar_texto).str.contains(patron, regex=True)
+            df_datos["Partida"].map(normalizar_texto).str.contains(pat, regex=True)
+            | df_datos["Recurso"].map(normalizar_texto).str.contains(pat, regex=True)
+            | df_datos["Código"].map(normalizar_texto).str.contains(pat, regex=True)
         )
 
-    df_filtrado = df_partidas[mask].copy()
+    df_filt = df_datos[mask].copy()
 
-    # -----------------------------------------------------------------------
-    # Banner informativo del proyecto
-    # -----------------------------------------------------------------------
-    info_parts = [f"📄 **Archivo:** `{nombre_archivo}`", f"📑 **Hoja:** `{hoja_seleccionada}`"]
-    for clave, valor in metadatos.items():
-        info_parts.append(f"**{clave}:** {valor}")
-    st.info("  |  ".join(info_parts))
+    # Banner corporativo
+    meta_str = f"<b>Archivo:</b> {nombre_fuente}"
+    for k, v in metadatos.items():
+        meta_str += f" &nbsp;|&nbsp; <b>{k}:</b> {v}"
+    render_banner_corporativo(meta_str, modo_badge)
 
-    if df_filtrado.empty:
-        st.warning("Los filtros actuales no devuelven partidas. Amplía la selección en la barra lateral.")
+    if info_extra.get("formulas_vacias", 0) > 0:
+        st.warning(
+            f"Se detectaron {info_extra['formulas_vacias']} filas con fórmulas sin valor cacheado en `data_only=True`. "
+            "Guarda el Excel desde Microsoft Excel antes de subirlo para ver todos los montos calculados."
+        )
+
+    if df_filt.empty:
+        st.warning("Los filtros actuales no devuelven registros. Amplía la selección en la barra lateral.")
         st.stop()
 
     # -----------------------------------------------------------------------
-    # Métricas Clave (KPIs)
+    # A. Panel Superior de KPIs
     # -----------------------------------------------------------------------
-    presupuesto_total_base = df_partidas["Total"].sum()
-    presupuesto_filtrado = df_filtrado["Total"].sum()
-    df_m2 = df_filtrado[df_filtrado["Es_m2"]].copy()
-    total_m2 = df_m2["Cantidad"].sum()
-    costo_prom_m2 = (presupuesto_filtrado / total_m2) if total_m2 > 0 else None
-    cantidad_partidas = len(df_filtrado)
+    total_presupuesto = df_filt["Total"].sum()
+    partidas_activas = df_filt[["Código", "Partida"]].drop_duplicates().shape[0]
+    recursos_unicos = df_filt["Recurso"].nunique()
 
-    pct_del_total = (
-        (presupuesto_filtrado / presupuesto_total_base * 100.0) if presupuesto_total_base > 0 else 0.0
-    )
+    rank_recursos = df_filt.groupby("Recurso", as_index=False)["Total"].sum().sort_values("Total", ascending=False)
+    if not rank_recursos.empty and total_presupuesto > 0:
+        top_rec_nombre = str(rank_recursos.iloc[0]["Recurso"])
+        top_rec_pct = rank_recursos.iloc[0]["Total"] / total_presupuesto * 100.0
+    else:
+        top_rec_nombre = "N/A"
+        top_rec_pct = 0.0
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
+    por_tipo = df_filt.groupby("Tipo_Recurso")["Total"].sum()
+    pct_mat = (por_tipo.get("Materiales", 0.0) / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
+    pct_mo = (por_tipo.get("Mano de Obra", 0.0) / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        st.metric("Presupuesto Total (Directo)", formato_moneda(total_presupuesto, 0))
+    with k2:
+        st.metric("Partidas Activas", f"{partidas_activas:,}".replace(",", "."))
+    with k3:
+        st.metric("Recursos Únicos", f"{recursos_unicos:,}".replace(",", "."))
+    with k4:
         st.metric(
-            label="Presupuesto Total (Filtrado)",
-            value=formato_moneda(presupuesto_filtrado, 0),
-            delta=f"{pct_del_total:.1f}% del costo directo" if len(df_filtrado) < len(df_partidas) else "100% costo directo",
+            "Recurso Mayor Incidencia",
+            f"{top_rec_pct:.1f}%",
+            delta=acortar_etiqueta(top_rec_nombre, 26),
+            delta_color="off",
         )
-    with col2:
+    with k5:
         st.metric(
-            label="Total Metros Cuadrados (m²)",
-            value=f"{formato_numero(total_m2, 2)} m²",
-            delta=f"{len(df_m2)} partidas en m²",
-        )
-    with col3:
-        st.metric(
-            label="Costo Promedio por m²",
-            value=f"{formato_moneda(costo_prom_m2, 0)} / m²" if costo_prom_m2 is not None else "N/A",
-            help="Relación entre el presupuesto filtrado y el total de m² detectados.",
-        )
-    with col4:
-        st.metric(
-            label="Partidas / Recursos",
-            value=f"{cantidad_partidas}",
-            delta=f"de {len(df_partidas)} ítems totales",
+            "Mat. vs Mano de Obra",
+            f"{pct_mat:.1f}% / {pct_mo:.1f}%",
+            delta="Materiales / MO",
+            delta_color="off",
         )
 
-    # Mostrar resumen oficial del pie de presupuesto si existe (Directo, GG, Utilidad, Neto, IVA, Total)
-    if not df_resumen_pie.empty:
-        with st.expander("💼 Resumen General del Pie de Presupuesto detectado en la hoja", expanded=False):
-            cols_pie = st.columns(min(len(df_resumen_pie), 6))
-            for idx, (_, fila_pie) in enumerate(df_resumen_pie.iterrows()):
-                col_destino = cols_pie[idx % len(cols_pie)]
-                monto_pie = fila_pie["Monto ($)"]
-                tasa = fila_pie["Factor / Tasa"]
-                subtexto = f"Factor: {tasa * 100:.2f}%" if pd.notna(tasa) and tasa < 1 else None
-                col_destino.metric(
-                    label=str(fila_pie["Concepto"]),
-                    value=formato_moneda(monto_pie, 0) if pd.notna(monto_pie) else "—",
-                    delta=subtexto,
+    if not df_pie.empty:
+        with st.expander("💼 Pie Oficial del Presupuesto (Directo, GG, Utilidad, Neto, IVA, Total)", expanded=False):
+            cols_pie = st.columns(min(len(df_pie), 6))
+            for i, (_, r_pie) in enumerate(df_pie.iterrows()):
+                cols_pie[i % len(cols_pie)].metric(
+                    label=str(r_pie["Concepto"]),
+                    value=formato_moneda(r_pie["Monto"], 0),
+                    delta=f"Factor: {r_pie['Factor'] * 100:.2f}%" if pd.notna(r_pie["Factor"]) and r_pie["Factor"] < 1 else None,
                 )
 
-    st.divider()
-
     # -----------------------------------------------------------------------
-    # Visualizaciones con Matplotlib
+    # Pestañas Principales del Dashboard
     # -----------------------------------------------------------------------
-    st.subheader("📊 Análisis Gráfico del Presupuesto")
-
-    # Gráfico 1: Distribución por Capítulo / Partida Principal
-    col_g1_ctrl, _ = st.columns([2, 3])
-    with col_g1_ctrl:
-        nivel_agrupacion = st.radio(
-            "Nivel de agrupación para Gráfico 1:",
-            options=["Capítulo", "Partida Principal"],
-            horizontal=True,
-        )
-
-    try:
-        fig1 = grafico_distribucion_capitulos(df_filtrado, agrupar_por=nivel_agrupacion)
-        st.pyplot(fig1, use_container_width=True)
-        plt.close(fig1)
-    except Exception as exc:
-        st.error(f"No se pudo generar el Gráfico 1: {exc}")
-
-    # Gráfico 2: Metros cuadrados (m²) por partida de obra
-    st.markdown("#### 📐 Metros Cuadrados ($m^2$) por Partida de Obra")
-    if df_m2.empty or total_m2 <= 0:
-        st.info("No se encontraron partidas con unidad en metros cuadrados ($m^2$) dentro de los filtros actuales.")
-    else:
-        total_partidas_m2 = len(df_m2[df_m2["Cantidad"] > 0])
-        if total_partidas_m2 > 10:
-            max_m2_mostrar = st.slider(
-                "Cantidad de partidas en m² a mostrar (ordenadas de mayor a menor):",
-                min_value=5,
-                max_value=total_partidas_m2,
-                value=min(18, total_partidas_m2),
-                step=1,
-            )
-        else:
-            max_m2_mostrar = total_partidas_m2
-
-        try:
-            fig2 = grafico_metros_cuadrados(df_m2, max_barras=max_m2_mostrar)
-            st.pyplot(fig2, use_container_width=True)
-            plt.close(fig2)
-        except Exception as exc:
-            st.error(f"No se pudo generar el Gráfico 2: {exc}")
-
-    # Gráfico 3: Pareto Top 10 Partidas / Recursos
-    st.markdown("#### 📈 Top 10 Partidas / Recursos de Mayor Incidencia (Pareto)")
-    if df_filtrado["Total"].sum() <= 0:
-        st.info("No hay montos positivos para construir el gráfico de Pareto.")
-    else:
-        try:
-            fig3 = grafico_pareto_top10(df_filtrado)
-            st.pyplot(fig3, use_container_width=True)
-            plt.close(fig3)
-        except Exception as exc:
-            st.error(f"No se pudo generar el Gráfico 3: {exc}")
-
-    st.divider()
-
-    # -----------------------------------------------------------------------
-    # Tabla interactiva y exportación
-    # -----------------------------------------------------------------------
-    st.subheader("📋 Detalle Limpio de Partidas y Recursos")
-
-    df_tabla = df_filtrado[
+    tab1, tab2, tab3 = st.tabs(
         [
-            "Capítulo",
-            "Partida Principal",
-            "Ítem",
-            "Descripción",
-            "Unidad",
-            "Cantidad",
-            "Precio Unitario",
-            "Total",
+            "📋 Estructuración de Partidas y Recursos",
+            "📊 Análisis Gráfico (Pareto & Distribución)",
+            "📈 Curva S (Control Físico / Financiero)",
         ]
-    ].copy()
-    df_tabla["% Incidencia"] = (
-        (df_tabla["Total"] / presupuesto_filtrado * 100.0) if presupuesto_filtrado > 0 else 0.0
     )
 
-    st.dataframe(
-        df_tabla,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Capítulo": st.column_config.TextColumn("Capítulo", width="medium"),
-            "Partida Principal": st.column_config.TextColumn("Subcapítulo / Partida", width="medium"),
-            "Ítem": st.column_config.TextColumn("Ítem", width="small"),
-            "Descripción": st.column_config.TextColumn("Descripción / Recurso", width="large"),
-            "Unidad": st.column_config.TextColumn("Unidad", width="small"),
-            "Cantidad": st.column_config.NumberColumn("Cantidad", format="%.2f"),
-            "Precio Unitario": st.column_config.NumberColumn("Precio Unitario ($)", format="$ %.0f"),
-            "Total": st.column_config.NumberColumn("Costo Total ($)", format="$ %.0f"),
-            "% Incidencia": st.column_config.NumberColumn("Incidencia (%)", format="%.2f %%"),
-        },
-    )
+    # =======================================================================
+    # B. PESTAÑA 1: Estructuración de Partidas y Recursos
+    # =======================================================================
+    with tab1:
+        c_busq1, c_busq2 = st.columns([2, 3])
+        with c_busq1:
+            insumo_rastrear = st.text_input(
+                "🔎 Rastreador de Insumo específico (ej. 'Hormigón', 'Carpintero', 'OSB'):",
+                value="",
+                key="rastreador_insumo",
+            ).strip()
 
-    # Botones de descarga (CSV y Excel)
-    col_dl1, col_dl2, _ = st.columns([1.2, 1.2, 3])
-    nombre_base = Path(nombre_archivo).stem
-    with col_dl1:
-        csv_bytes = df_tabla.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            label="⬇️ Descargar CSV limpio",
-            data=csv_bytes,
-            file_name=f"{nombre_base}_procesado.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with col_dl2:
-        try:
-            xlsx_bytes = exportar_excel_bytes(df_tabla)
-            st.download_button(
-                label="⬇️ Descargar Excel (.xlsx)",
-                data=xlsx_bytes,
-                file_name=f"{nombre_base}_procesado.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        df_tab1 = df_filt.copy()
+        if insumo_rastrear:
+            pat_ins = re.escape(normalizar_texto(insumo_rastrear))
+            df_tab1 = df_tab1[df_tab1["Recurso"].map(normalizar_texto).str.contains(pat_ins, regex=True)]
+            if df_tab1.empty:
+                st.warning(f"No se encontraron partidas que utilicen '{insumo_rastrear}'.")
+            else:
+                impacto_ins = df_tab1["Total"].sum()
+                pct_ins = (impacto_ins / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
+                with c_busq2:
+                    st.success(
+                        f"**Impacto acumulado de '{insumo_rastrear}':** {formato_moneda(impacto_ins, 0)} "
+                        f"({pct_ins:.2f}% del total filtrado) en **{df_tab1[['Código', 'Partida']].drop_duplicates().shape[0]} partidas**."
+                    )
+
+        if not df_tab1.empty:
+            total_t1 = df_tab1["Total"].sum()
+            df_vista = df_tab1[
+                [
+                    "Capítulo",
+                    "Código",
+                    "Partida",
+                    "Tipo_Recurso",
+                    "Recurso",
+                    "Unidad",
+                    "Cantidad",
+                    "Precio_Unitario",
+                    "Total",
+                ]
+            ].copy()
+            df_vista["Incidencia (%)"] = (df_vista["Total"] / total_t1 * 100.0) if total_t1 > 0 else 0.0
+
+            st.dataframe(
+                df_vista,
                 use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Capítulo": st.column_config.TextColumn("Capítulo / WBS", width="medium"),
+                    "Código": st.column_config.TextColumn("Código", width="small"),
+                    "Partida": st.column_config.TextColumn("Partida / Actividad", width="large"),
+                    "Tipo_Recurso": st.column_config.TextColumn("Tipo de Recurso", width="small"),
+                    "Recurso": st.column_config.TextColumn("Recurso / Insumo", width="large"),
+                    "Unidad": st.column_config.TextColumn("Und.", width="small"),
+                    "Cantidad": st.column_config.NumberColumn("Cantidad", format="%.2f"),
+                    "Precio_Unitario": st.column_config.NumberColumn("Precio Unitario", format="$ %.0f"),
+                    "Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
+                    "Incidencia (%)": st.column_config.ProgressColumn(
+                        "Incidencia",
+                        format="%.2f%%",
+                        min_value=0.0,
+                        max_value=max(float(df_vista["Incidencia (%)"].max()), 1.0),
+                    ),
+                },
             )
-        except Exception as exc:
-            st.warning(f"No se pudo preparar la descarga Excel: {exc}")
 
-    # Vista opcional de la jerarquía completa (incluyendo encabezados y subtotales descartados)
-    with st.expander("🔍 Ver estructura jerárquica completa extraída (Capítulos, Subcapítulos y Partidas)", expanded=False):
-        st.dataframe(
-            df_jerarquia[["Fila Excel", "Tipo", "Ítem", "Descripción", "Unidad", "Cantidad", "Precio Unitario", "Total"]],
-            use_container_width=True,
-            hide_index=True,
+            # Vista jerárquica resumida Capítulo -> Partida
+            with st.expander("🗂️ Resumen Jerárquico Agrupado (Capítulo → Partida)", expanded=False):
+                res_jer = (
+                    df_tab1.groupby(["Capítulo", "Código", "Partida"], as_index=False)
+                    .agg(Recursos=("Recurso", "nunique"), Costo_Total=("Total", "sum"))
+                    .sort_values(["Capítulo", "Código"])
+                )
+                res_jer["% Incidencia"] = (res_jer["Costo_Total"] / total_t1 * 100.0) if total_t1 > 0 else 0.0
+                st.dataframe(
+                    res_jer,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Costo_Total": st.column_config.NumberColumn("Costo Total", format="$ %.0f"),
+                        "% Incidencia": st.column_config.ProgressColumn(
+                            "% Incidencia",
+                            format="%.2f%%",
+                            min_value=0.0,
+                            max_value=max(float(res_jer["% Incidencia"].max()), 1.0),
+                        ),
+                    },
+                )
+
+            # Exportación limpia a Excel
+            col_exp1, _ = st.columns([1.4, 3.6])
+            with col_exp1:
+                excel_bytes = exportar_excel_estructurado(df_vista)
+                st.download_button(
+                    label="⬇️ Exportar Estructuración a Excel (.xlsx)",
+                    data=excel_bytes,
+                    file_name=f"{Path(nombre_fuente).stem}_PRISMA_PMO.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+    # =======================================================================
+    # C. PESTAÑA 2: Análisis Gráfico de Recursos (Pareto y Distribución)
+    # =======================================================================
+    with tab2:
+        col_g1, col_g2 = st.columns([1, 1.35])
+        with col_g1:
+            st.plotly_chart(grafico_dona_tipo_recurso(df_filt), use_container_width=True)
+        with col_g2:
+            st.plotly_chart(grafico_top15_recursos(df_filt), use_container_width=True)
+
+        st.divider()
+        st.plotly_chart(grafico_pareto_recursos(df_filt, max_items=20), use_container_width=True)
+
+        st.divider()
+        st.plotly_chart(grafico_treemap_jerarquico(df_filt), use_container_width=True)
+
+    # =======================================================================
+    # D. PESTAÑA 3: Curva S de Construcción (Control Físico / Financiero)
+    # =======================================================================
+    with tab3:
+        c_s1, c_s2, c_s3 = st.columns([1.2, 1.2, 1.6])
+        with c_s1:
+            periodicidad = st.radio("Periodicidad:", options=["Mensual", "Semanal"], horizontal=True)
+        with c_s2:
+            vista_curva = st.radio("Vista de Curva S:", options=["Monetaria ($)", "Porcentual (%)"], horizontal=True)
+        with c_s3:
+            tipos_curva_opts = ["Todos los Recursos"] + sorted(df_filt["Tipo_Recurso"].unique().tolist())
+            tipo_curva_sel = st.selectbox("Filtrar Curva S por Tipo de Recurso:", options=tipos_curva_opts)
+
+        df_curva_in = (
+            df_filt if tipo_curva_sel == "Todos los Recursos" else df_filt[df_filt["Tipo_Recurso"] == tipo_curva_sel]
         )
+
+        if df_curva_in.empty:
+            st.info("No hay datos para el tipo de recurso seleccionado.")
+        else:
+            df_curva, es_simulada, tiene_real = construir_serie_curva_s(
+                df=df_curva_in,
+                periodicidad=periodicidad,
+                fecha_inicio_sim=fecha_ini_sim,
+                fecha_fin_sim=fecha_fin_sim,
+                modelo_sim=modelo_sim,
+            )
+
+            if es_simulada:
+                st.info(
+                    f"ℹ️ Proyección temporal generada con modelo **{modelo_sim}** entre **{fecha_ini_sim}** y **{fecha_fin_sim}** "
+                    "(el archivo no contenía columnas de fecha)."
+                )
+
+            if df_curva.empty:
+                st.warning("No fue posible generar periodos válidos para la Curva S.")
+            else:
+                st.plotly_chart(
+                    grafico_curva_s(
+                        df_curva=df_curva,
+                        vista_porcentual=(vista_curva == "Porcentual (%)"),
+                        tiene_real=tiene_real,
+                    ),
+                    use_container_width=True,
+                )
+
+                # Resumen ejecutivo de desviación o pico
+                idx_pico = df_curva["PV_Parcial"].idxmax()
+                periodo_pico = df_curva.loc[idx_pico, "Periodo"]
+                monto_pico = df_curva.loc[idx_pico, "PV_Parcial"]
+
+                cs_m1, cs_m2, cs_m3 = st.columns(3)
+                cs_m1.metric("Inversión Total Curva S (PV)", formato_moneda(df_curva["PV_Parcial"].sum(), 0))
+                cs_m2.metric(f"Periodo Pico ({periodicidad})", str(periodo_pico), delta=formato_moneda(monto_pico, 0))
+                if tiene_real and "EV_Acum" in df_curva.columns:
+                    ev_tot = df_curva["EV_Parcial"].sum()
+                    pct_ev = (ev_tot / df_curva["PV_Parcial"].sum() * 100.0) if df_curva["PV_Parcial"].sum() > 0 else 0.0
+                    cs_m3.metric("Avance Real Acumulado (EV)", formato_moneda(ev_tot, 0), delta=f"{pct_ev:.1f}% del PV")
+                else:
+                    cs_m3.metric("Periodos Proyectados", f"{len(df_curva)}", delta="Sin columna Costo Real (EV)")
+
+                with st.expander("📅 Tabla de Flujo por Periodo (PV / EV)", expanded=False):
+                    st.dataframe(df_curva, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
