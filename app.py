@@ -14,7 +14,6 @@ Características principales:
 
 from __future__ import annotations
 
-import base64
 import datetime as dt
 import io
 import math
@@ -136,123 +135,171 @@ SUBTOTAL_PREFIXES = (
 # Inyección de estilos CSS corporativos (PRISMA SpA Constructora)
 # ---------------------------------------------------------------------------
 def aplicar_estilos_prisma() -> None:
-    """Aplica estilos corporativos inspirados en concreto arquitectónico, azul marino y ocre."""
+    """Aplica estilos corporativos consistentes tanto en entorno local como en Streamlit Cloud."""
     st.markdown(
         f"""
-        <style>
-        .stApp {{
-            background-color: {PRISMA_BG};
-        }}
-        .prisma-header {{
-            background: linear-gradient(135deg, {PRISMA_NAVY_DARK} 0%, {PRISMA_NAVY} 68%, #204A73 100%);
-            border-bottom: 4px solid {PRISMA_GOLD};
-            border-radius: 12px;
-            padding: 1.15rem 1.5rem;
-            margin-bottom: 1.1rem;
-            color: #FFFFFF;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1.25rem;
-            box-shadow: 0 4px 16px rgba(21, 51, 82, 0.14);
-        }}
-        .prisma-header-left {{
-            display: flex;
-            align-items: center;
-            gap: 1.1rem;
-        }}
-        .prisma-logo-box {{
-            background: #EAECEF;
-            padding: 6px 10px;
-            border-radius: 8px;
-            border: 1px solid rgba(200, 146, 54, 0.45);
-            display: flex;
-            align-items: center;
-        }}
-        .prisma-logo-box img {{
-            height: 54px;
-            width: auto;
-            object-fit: contain;
-        }}
-        .prisma-title {{
-            margin: 0;
-            font-size: 1.48rem;
-            font-weight: 700;
-            letter-spacing: 0.3px;
-            color: #FFFFFF;
-        }}
-        .prisma-subtitle {{
-            margin: 0.22rem 0 0 0;
-            font-size: 0.9rem;
-            color: #D7E2EE;
-        }}
-        .prisma-badge {{
-            background: rgba(200, 146, 54, 0.18);
-            border: 1px solid {PRISMA_GOLD};
-            color: #F6D89C;
-            padding: 0.35rem 0.75rem;
-            border-radius: 999px;
-            font-size: 0.78rem;
-            font-weight: 600;
-            white-space: nowrap;
-        }}
-        div[data-testid="stMetric"] {{
-            background-color: {PRISMA_CARD};
-            border: 1px solid #E2E8F0;
-            border-top: 3px solid {PRISMA_NAVY};
-            border-radius: 10px;
-            padding: 0.85rem 1rem;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
-        }}
-        div[data-testid="stMetricLabel"] p {{
-            font-weight: 600;
-            color: {PRISMA_SLATE};
-            font-size: 0.84rem;
-        }}
-        div[data-testid="stMetricValue"] {{
-            color: {PRISMA_NAVY};
-            font-weight: 700;
-        }}
-        button[data-baseweb="tab"] {{
-            font-weight: 600;
-            color: {PRISMA_SLATE};
-        }}
-        button[data-baseweb="tab"][aria-selected="true"] {{
-            color: {PRISMA_NAVY} !important;
-            border-bottom-color: {PRISMA_GOLD} !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background-color: #FFFFFF;
-            border-right: 1px solid #E2E8F0;
-        }}
-        </style>
-        """,
+<style>
+:root {{
+    color-scheme: light;
+}}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {{
+    background-color: {PRISMA_BG} !important;
+    color: #152536 !important;
+}}
+section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {{
+    background-color: #FFFFFF !important;
+    color: #152536 !important;
+    border-right: 1px solid #CBD5E1;
+}}
+/* Forzar contraste legible en textos, etiquetas y controles incluso si el host usa tema oscuro */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4,
+.stApp p, .stApp label, .stApp span,
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] label {{
+    color: #152536;
+}}
+.stApp [data-baseweb="input"] input,
+.stApp [data-baseweb="select"] > div,
+section[data-testid="stSidebar"] [data-baseweb="input"] input,
+section[data-testid="stSidebar"] [data-baseweb="select"] > div {{
+    background-color: #FFFFFF !important;
+    color: #152536 !important;
+    border-color: #CBD5E1 !important;
+}}
+/* Tags de multiselect con identidad PRISMA */
+span[data-baseweb="tag"] {{
+    background-color: {PRISMA_NAVY} !important;
+    color: #FFFFFF !important;
+}}
+span[data-baseweb="tag"] span {{
+    color: #FFFFFF !important;
+}}
+.prisma-header {{
+    background: linear-gradient(135deg, {PRISMA_NAVY_DARK} 0%, {PRISMA_NAVY} 68%, #204A73 100%);
+    border-bottom: 4px solid {PRISMA_GOLD};
+    border-radius: 12px;
+    padding: 1.15rem 1.5rem;
+    margin-bottom: 1.15rem;
+    color: #FFFFFF !important;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.25rem;
+    box-shadow: 0 4px 16px rgba(21, 51, 82, 0.14);
+}}
+.prisma-header * {{
+    color: #FFFFFF;
+}}
+.prisma-header-left {{
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}}
+.prisma-emblem {{
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(200, 146, 54, 0.55);
+    border-radius: 10px;
+    padding: 0.55rem 0.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}}
+.prisma-eyebrow {{
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: #F6D89C !important;
+    margin-bottom: 0.15rem;
+}}
+.prisma-title {{
+    margin: 0 !important;
+    font-size: 1.45rem !important;
+    font-weight: 700 !important;
+    line-height: 1.2 !important;
+    color: #FFFFFF !important;
+}}
+.prisma-subtitle {{
+    margin: 0.3rem 0 0 0 !important;
+    font-size: 0.88rem !important;
+    color: #D7E2EE !important;
+}}
+.prisma-badge {{
+    background: rgba(200, 146, 54, 0.22);
+    border: 1px solid {PRISMA_GOLD};
+    color: #F6D89C !important;
+    padding: 0.4rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+}}
+/* Tarjetas KPI sin truncamiento */
+div[data-testid="stMetric"] {{
+    background-color: {PRISMA_CARD} !important;
+    border: 1px solid #DCE3EC;
+    border-top: 3px solid {PRISMA_NAVY};
+    border-radius: 10px;
+    padding: 0.85rem 0.9rem;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}}
+div[data-testid="stMetricLabel"] p {{
+    font-weight: 600 !important;
+    color: {PRISMA_SLATE} !important;
+    font-size: 0.8rem !important;
+}}
+div[data-testid="stMetricValue"] > div {{
+    color: {PRISMA_NAVY} !important;
+    font-weight: 700 !important;
+    font-size: clamp(1.1rem, 1.45vw, 1.48rem) !important;
+    line-height: 1.25 !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    white-space: nowrap !important;
+}}
+button[data-baseweb="tab"] {{
+    font-weight: 600 !important;
+    color: {PRISMA_SLATE} !important;
+}}
+button[data-baseweb="tab"][aria-selected="true"] {{
+    color: {PRISMA_NAVY} !important;
+    border-bottom-color: {PRISMA_GOLD} !important;
+}}
+</style>
+        """.strip(),
         unsafe_allow_html=True,
     )
 
 
 def render_banner_corporativo(meta_texto: str, modo_badge: str) -> None:
-    """Muestra la cabecera corporativa con el logo de PRISMA SpA Constructora."""
-    logo_html = ""
-    if LOGO_PRISMA_PATH.exists():
-        img_b64 = base64.b64encode(LOGO_PRISMA_PATH.read_bytes()).decode("ascii")
-        logo_html = f'<div class="prisma-logo-box"><img src="data:image/jpeg;base64,{img_b64}" alt="PRISMA SpA Constructora"/></div>'
-
-    st.markdown(
-        f"""
-        <div class="prisma-header">
-            <div class="prisma-header-left">
-                {logo_html}
-                <div>
-                    <h1 class="prisma-title">Control Ejecutivo de Presupuestos, Recursos y Curva S</h1>
-                    <p class="prisma-subtitle">{meta_texto}</p>
-                </div>
-            </div>
-            <div class="prisma-badge">{modo_badge}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    """Muestra la cabecera corporativa sin indentación HTML (evita bloques de código en Markdown)."""
+    svg_emblema = (
+        '<div class="prisma-emblem">'
+        '<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<path d="M6 31V11L18 4L30 11V31H24V15L18 11.5L12 15V31H6Z" fill="#FFFFFF" fill-opacity="0.92"/>'
+        '<path d="M18 4L30 11V14.5L18 7.5V4Z" fill="#C89236"/>'
+        '<path d="M15 31V19H21V24H17.5V31H15Z" fill="#C89236"/>'
+        '</svg>'
+        '</div>'
     )
+    html_banner = (
+        f'<div class="prisma-header">'
+        f'<div class="prisma-header-left">'
+        f'{svg_emblema}'
+        f'<div>'
+        f'<div class="prisma-eyebrow">PRISMA SpA Constructora · Plataforma PMO</div>'
+        f'<h1 class="prisma-title">Control Ejecutivo de Presupuestos, Recursos y Curva S</h1>'
+        f'<p class="prisma-subtitle">{meta_texto}</p>'
+        f'</div>'
+        f'</div>'
+        f'<div class="prisma-badge">{modo_badge}</div>'
+        f'</div>'
+    )
+    st.markdown(html_banner, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1191,8 +1238,9 @@ def grafico_dona_tipo_recurso(df: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         title=dict(text="Distribución de Costo por Tipo de Recurso", font=dict(color=PRISMA_NAVY, size=15)),
-        margin=dict(t=50, b=20, l=20, r=20),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5),
+        height=440,
+        margin=dict(t=60, b=55, l=35, r=35),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.16, xanchor="center", x=0.5),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
@@ -1231,10 +1279,11 @@ def grafico_top15_recursos(df: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         title=dict(text="Top 15 Recursos / Insumos de Mayor Costo", font=dict(color=PRISMA_NAVY, size=15)),
+        height=440,
         xaxis_title="Costo Total ($)",
         yaxis_title="",
-        margin=dict(t=50, b=30, l=10, r=20),
-        legend=dict(title="", orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+        margin=dict(t=60, b=55, l=10, r=20),
+        legend=dict(title="", orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#FFFFFF",
     )
@@ -1762,7 +1811,7 @@ def main() -> None:
     pct_mat = (por_tipo.get("Materiales", 0.0) / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
     pct_mo = (por_tipo.get("Mano de Obra", 0.0) / total_presupuesto * 100.0) if total_presupuesto > 0 else 0.0
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4, k5 = st.columns([1.45, 0.82, 0.82, 1.0, 1.1])
     with k1:
         st.metric("Presupuesto Total (Directo)", formato_moneda(total_presupuesto, 0))
     with k2:
@@ -1779,7 +1828,7 @@ def main() -> None:
     with k5:
         st.metric(
             "Mat. vs Mano de Obra",
-            f"{pct_mat:.1f}% / {pct_mo:.1f}%",
+            f"{pct_mat:.0f}% / {pct_mo:.0f}%",
             delta="Materiales / MO",
             delta_color="off",
         )
